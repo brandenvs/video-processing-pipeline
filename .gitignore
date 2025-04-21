@@ -6,4 +6,5 @@ adp-video-pipeline/nodes/
 nodes/
 adp-video-pipeline/nodes
 
+__pycache__/
 data/
