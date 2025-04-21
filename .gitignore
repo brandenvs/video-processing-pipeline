@@ -1,0 +1,9 @@
+.venv/
+models/
+data/
+*db
+adp-video-pipeline/nodes/
+nodes/
+adp-video-pipeline/nodes
+
+data/
