@@ -1,7 +1,8 @@
 import argparse
 import enum
 import os
-import comfy.options
+# Fix the import to use local options module
+from . import options
 
 
 class EnumAction(argparse.Action):
@@ -190,7 +191,7 @@ parser.add_argument("--user-directory", type=is_valid_directory, default=None, h
 
 parser.add_argument("--enable-compress-response-body", action="store_true", help="Enable compressing response body.")
 
-if comfy.options.args_parsing:
+if options.args_parsing:
     args = parser.parse_args()
 else:
     args = parser.parse_args([])

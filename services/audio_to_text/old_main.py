@@ -20,16 +20,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
-load_pipeline
-get_model_path
-extract_audio_for_transcription
-transcribe_audio
-split_into_sentences
-format_transcript
-fix_transcript_sentence
-fix_transcript_full
-hierarchical_summary
-tone_analysis
-analyze_transcript
-direct_transcription

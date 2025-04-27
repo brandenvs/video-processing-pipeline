@@ -12,7 +12,7 @@ from transformers import (
 )
 
 # Comfy
-import comfy.model_management as mm
+from ..comfy import model_management as mm
 
 # Qwen
 from qwen_vl_utils import process_vision_info
@@ -29,7 +29,6 @@ def tensor2pil(image):
 
 
 class BaseVLModel:
-    """Base class for vision-language models"""
     def __init__(self):
         self.device = mm.get_torch_device()
         self.bf16_support = (
@@ -51,14 +50,25 @@ class BaseVLModel:
 
     def _download_model(self, model_id, model_base_path="models/prompt_generator"):
         """Download model from Hugging Face if not available locally"""
+        # Ensure the directory exists
+        os.makedirs(model_base_path, exist_ok=True)
+        
         model_checkpoint = os.path.join(model_base_path, os.path.basename(model_id))
         
         if not os.path.exists(model_checkpoint):
             from huggingface_hub import snapshot_download
-            snapshot_download(
-                repo_id=model_id,
-                local_dir=model_checkpoint,
-            )
+            print(f"Downloading model {model_id} to {model_checkpoint}...")
+            try:
+                snapshot_download(
+                    repo_id=model_id,
+                    local_dir=model_checkpoint,
+                )
+                print(f"Model downloaded successfully to {model_checkpoint}")
+            except Exception as e:
+                print(f"Error downloading model: {str(e)}")
+                # For testing, we'll use the model ID directly from Hugging Face to avoid download requirements
+                print(f"Using model ID directly from Hugging Face: {model_id}")
+                return model_id
         
         return model_checkpoint
 
@@ -105,13 +115,12 @@ class QwenVLModel(BaseVLModel):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             
-        # Initialize processor if not already done
         if self.processor is None:
             self.processor = AutoProcessor.from_pretrained(
                 self.model_checkpoint, 
                 min_pixels=min_pixels, 
                 max_pixels=max_pixels,
-                use_fast=True  # Force fast tokenizer to avoid warning
+                use_fast=True 
             )
         
         # Initialize model if not already done
@@ -132,9 +141,7 @@ class QwenVLModel(BaseVLModel):
                 device_map="auto",
                 attn_implementation=attention,
                 quantization_config=quantization_config,
-                # Enable memory efficient attention if available
                 use_flash_attention_2="flash_attention_2" in attention,
-                # Use low CPU memory usage
                 low_cpu_mem_usage=True,
             )
 
@@ -225,13 +232,11 @@ class Gemma3VLModel(BaseVLModel):
             
             input_len = inputs["input_ids"].shape[-1]
             
-            # Set safe generation parameters
-            # If temperature is 0 or very small, use greedy decoding instead of sampling
             do_sample = False
-            if temperature > 0.01:  # Only use sampling with meaningful temperature values
+            if temperature > 0.01:
                 do_sample = True
             else:
-                temperature = 1.0  # Set to 1.0 when not using temperature to avoid CUDA errors
+                temperature = 1.0  
             
             # Generate output
             generation = self.model.generate(
@@ -239,7 +244,7 @@ class Gemma3VLModel(BaseVLModel):
                 max_new_tokens=max_new_tokens, 
                 temperature=temperature,
                 do_sample=do_sample,
-                top_p=0.95,  # Add top_p sampling for stability
+                top_p=0.95,  
             )
             generation = generation[0][input_len:]
             
@@ -250,8 +255,15 @@ class Gemma3VLModel(BaseVLModel):
 class ImageToTextService:
     """Unified service to handle image/video to text generation with multiple models"""
     def __init__(self):
-        self.qwen_model = QwenVLModel()
-        self.gemma_model = Gemma3VLModel()
+        try:
+            self.qwen_model = QwenVLModel()
+            self.gemma_model = Gemma3VLModel()
+            print("ImageToTextService initialized successfully")
+        except Exception as e:
+            print(f"Warning: Error initializing ImageToTextService: {str(e)}")
+            print("The service will attempt to initialize models on demand")
+            self.qwen_model = None
+            self.gemma_model = None
 
     def _extract_frames(self, video_path):
         """Extract key frames from a video as a set of images
@@ -281,8 +293,8 @@ class ImageToTextService:
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
             # Extract only a small number of key frames to avoid CUDA OOM
-            max_dimension = 384  # Reduced max dimension
-            max_frames = 4       # Very limited number of frames
+            max_dimension = 384 
+            max_frames = 4   
             
             # Calculate step for frame extraction
             frame_step = max(1, frame_count // max_frames)
@@ -366,9 +378,9 @@ class ImageToTextService:
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
             # Use very aggressive downsampling to avoid CUDA OOM
-            max_dimension = 256  # Drastically reduced from 640 to 256
-            max_frames = 5       # Drastically reduced from 300 to 5
-            target_fps = 1       # Only 1 FPS to minimize memory usage
+            max_dimension = 256
+            max_frames = 5 
+            target_fps = 1  
             
             # Calculate new dimensions
             new_width, new_height = width, height
@@ -380,15 +392,12 @@ class ImageToTextService:
                     new_height = max_dimension
                     new_width = int(width * (max_dimension / height))
             
-            # Always process videos for memory efficiency
-            # Calculate frame step to extract limited frames
             frame_step = max(1, int(frame_count / max_frames))
             
             print(f"Processing video: {video_path}")
             print(f"Original: {width}x{height}, {frame_count} frames at {fps} FPS")
             print(f"Target: {new_width}x{new_height}, {min(max_frames, frame_count)} frames at {target_fps} FPS")
             
-            # Set up video writer with reduced dimensions and fps
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(processed_path, fourcc, target_fps, (new_width, new_height))
             
@@ -446,24 +455,19 @@ class ImageToTextService:
 Important: Provide a complete and accurate analysis, focusing on objective details rather than subjective interpretations. Maintain JSON structure in your response.
 """
         
-        # Use the user-provided text if available, otherwise use a default prompt
         if not text or text.strip() == "":
             default_prompt = "Perform a detailed visual analysis and output the results in JSON format."
             text = default_prompt
         
         if video_path:
-            # Try to extract frames first (preferred method to avoid CUDA OOM)
             frame_paths = self._extract_frames(video_path)
             
             if frame_paths and len(frame_paths) > 0:
-                # Use extracted frames as multiple images instead of video
                 content_items = [{"type": "text", "text": text}]
                 
-                # Add each frame as a separate image
                 for frame_path in frame_paths:
                     content_items.insert(0, {"type": "image", "image": f"file://{frame_path}"})
                 
-                # Add frame numbering information to help the model
                 frame_info = "The images shown are key frames from a video. Analyze each frame and provide a comprehensive analysis."
                 
                 messages = [
@@ -471,7 +475,6 @@ Important: Provide a complete and accurate analysis, focusing on objective detai
                     {"role": "user", "content": content_items},
                 ]
             else:
-                # Fall back to video processing if frame extraction failed
                 processed_video_path = self._process_video(video_path)
                 
                 messages = [
@@ -518,43 +521,46 @@ Important: Provide a complete and accurate analysis, focusing on objective detai
     def infer(
         self,
         text,
-        model,
+        model="Qwen2.5-VL-3B-Instruct",
         keep_model_loaded=False,
-        temperature=0.0,  # Default to greedy decoding for stability
-        max_new_tokens=512,  # Reduced from 1024 to 512 for memory efficiency
-        min_pixels=64512,  # Reduced from 200704 to 64512 (256*252) for memory efficiency
-        max_pixels=250880,  # Reduced from 1003520 to 250880 (320*784) for memory efficiency
+        temperature=0.1, 
+        max_new_tokens=512, 
+        min_pixels=64512, 
+        max_pixels=250880,
         seed=-1,
-        quantization="8bit",  # Default to 8-bit quantization for videos
+        quantization="8bit",
         video_path=None,
         source_path=None,
         image=None,
         attention="eager",
     ):
         """Main inference method supporting both Qwen and Gemma models"""
-        if seed != -1:
-            torch.manual_seed(seed)
-        
-        # Clean up memory before starting
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gc.collect()
-        
-        # Determine model type and set up model ID
-        if model.startswith("gemma-"):
-            model_type = "gemma"
-            model_id = f"google/{model}"
-            active_model = self.gemma_model
-        else:
-            model_type = "qwen"
-            model_id = f"qwen/{model}"
-            active_model = self.qwen_model
-        
-        # Prepare image if available
-        temp_path = active_model._prepare_image(image, seed) if image is not None else None
+        import time
+        start_time = time.time()
         
         try:
-            # Auto-detect if we should use quantization based on available memory
+            if seed != -1:
+                torch.manual_seed(seed)
+            
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                gc.collect()
+            
+            if model.startswith("gemma-"):
+                model_type = "gemma"
+                model_id = f"google/{model}"
+                if self.gemma_model is None:
+                    self.gemma_model = Gemma3VLModel()
+                active_model = self.gemma_model
+            else:
+                model_type = "qwen"
+                model_id = f"qwen/{model}"
+                if self.qwen_model is None:
+                    self.qwen_model = QwenVLModel()
+                active_model = self.qwen_model
+            
+            temp_path = active_model._prepare_image(image, seed) if image is not None else None
+            
             auto_quantization = quantization
             if auto_quantization is None and torch.cuda.is_available():
                 free_memory = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)
@@ -565,7 +571,6 @@ Important: Provide a complete and accurate analysis, focusing on objective detai
                     print(f"Available GPU memory: {free_memory_gb:.2f}GB - Automatically enabling 8-bit quantization")
                     auto_quantization = "8bit"
             
-            # Load the appropriate model
             if model_type == "qwen":
                 active_model.load_model(
                     model_id=model_id,
@@ -614,7 +619,6 @@ Important: Provide a complete and accurate analysis, focusing on objective detai
                 except Exception as e:
                     print(f"Warning: Failed to remove temporary file {temp_path}: {e}")
             
-            # Clean up extracted frame files if they exist
             if video_path:
                 frame_paths = self._extract_frames(video_path)
                 if frame_paths:
@@ -625,7 +629,6 @@ Important: Provide a complete and accurate analysis, focusing on objective detai
                             except:
                                 pass
                     
-                    # Try to remove the frames directory
                     try:
                         import shutil
                         from pathlib import Path
@@ -633,32 +636,43 @@ Important: Provide a complete and accurate analysis, focusing on objective detai
                         shutil.rmtree(frames_dir, ignore_errors=True)
                     except:
                         pass
+            
+            end_time = time.time()
+            processing_time = end_time - start_time
                 
-            return joined_result_str
+            return {
+                "result": joined_result_str,
+                "model": model,
+                "time_to_process": processing_time
+            }
             
         except Exception as e:
+            end_time = time.time()
+            processing_time = end_time - start_time
+            
             print(f"Error during inference: {str(e)}")
-            # Ensure model is unloaded in case of error
             if not keep_model_loaded:
                 active_model._unload_model()
             
-            # Clean temporary files even on error
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
                 except:
                     pass
                     
-            raise
+            return {
+                "result": f"Error: {str(e)}",
+                "model": model,
+                "time_to_process": processing_time,
+                "error": True
+            }
 
-
+# Use for testing
 if __name__ == "__main__":
-    # Create service instance
     image_to_text_service = ImageToTextService()
     
     import argparse
     
-    # Setup command line argument parser
     parser = argparse.ArgumentParser(description="Image/Video to Text Processing Service")
     parser.add_argument("--model", type=str, default="Qwen2.5-VL-3B-Instruct", 
                         help="Model to use: Qwen2.5-VL-3B-Instruct, Qwen2.5-VL-7B-Instruct, gemma-3-4b-it, etc.")
@@ -670,7 +684,7 @@ if __name__ == "__main__":
                         help="Path to input video file")
     parser.add_argument("--temperature", type=float, default=0.5, 
                         help="Temperature for sampling (0.0 = greedy)")
-    parser.add_argument("--max_tokens", type=int, default=1024, 
+    parser.add_argument("--max_tokens", type=int, default=512, 
                         help="Maximum number of tokens to generate")
     parser.add_argument("--quantize", type=str, default="8bit", choices=["none", "4bit", "8bit"], 
                         help="Quantization to use (none, 4bit, 8bit)")
@@ -682,19 +696,18 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    # Set parameters from command line arguments
     text = args.text
     model = args.model
     keep_model_loaded = args.keep_loaded
     temperature = args.temperature
     max_new_tokens = args.max_tokens
-    min_pixels = 64512   # 256 * 252 (reduced for memory efficiency)
-    max_pixels = 250880  # 320 * 784 (reduced for memory efficiency)
+    min_pixels = 64512   
+    max_pixels = 250880 
     seed = -1
     quantization = None if args.quantize == "none" else args.quantize
     video_path = args.video
     source_path = args.image
-    image = None  # For tensor input, not used in CLI mode
+    image = None 
     attention = args.attention
     
     # Print configuration
@@ -731,7 +744,8 @@ if __name__ == "__main__":
         
         print("\nResult:")
         print("-" * 40)
-        print(result)
+        print(result["result"])
+        print(f"Processing time: {result['time_to_process']:.2f} seconds")
         
     except Exception as e:
         import traceback
