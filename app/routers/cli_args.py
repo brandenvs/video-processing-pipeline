@@ -1,8 +1,7 @@
 import argparse
 import enum
 import os
-# Fix the import to use local options module
-from . import options
+from app.routers import options
 
 
 class EnumAction(argparse.Action):

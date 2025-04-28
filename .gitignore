@@ -8,3 +8,6 @@ adp-video-pipeline/nodes
 
 __pycache__/
 data/
+local/
+.vscode/
+.random_kak_claude_did/
