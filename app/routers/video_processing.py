@@ -3,6 +3,7 @@ from typing import Optional
 from pydantic import BaseModel
 import torch
 import numpy as np
+import cv2
 
 from torchvision.transforms import ToPILImage
 from transformers import (
@@ -14,7 +15,11 @@ from transformers import (
 from PIL import Image
 from qwen_vl_utils import process_vision_info
 
+from app.routers import model_management as mm
+
 from fastapi import APIRouter, Depends
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 class BaseProcessor(BaseModel):
     processor: str
@@ -53,27 +58,26 @@ async def process_video(request_body: BaseProcessor):
         seed=request_body.seed,
         quantization=request_body.quantization,
         source_path=request_body.source_path,
-        image=request_body.image_path,
+        image_path=request_body.image_path,
         attention=request_body.attention,
     )
 
+    print(generated_data)
     return [{"results":generated_data }]
 
-def tensor2pil(image):
-    return Image.fromarray(
-        np.clip(255.0 * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8)
-    )
+# MARK: Qwen
 
 class Qwen2_VQA:
     def __init__(self):
         self.model_checkpoint = None
         self.processor = None
         self.model = None
-        self.device = 'cuda:0'
+        self.device = mm.get_torch_device()
         self.bf16_support = (
             torch.cuda.is_available()
             and torch.cuda.get_device_capability(self.device)[0] >= 8
         )
+        print(mm.get_torch_device())
 
     def inference(
         self,
@@ -87,11 +91,12 @@ class Qwen2_VQA:
         seed,
         quantization,
         source_path=None,
-        image=None,  # add image parameter
+        image_path=None,
         attention="eager",
     ):
         if seed != -1:
             torch.manual_seed(seed)
+        
         model_id = f"qwen/{model}"
         self.model_checkpoint = os.path.join(
             "models/prompt_generator", os.path.basename(model_id)
@@ -105,38 +110,29 @@ class Qwen2_VQA:
                 local_dir=self.model_checkpoint,
             )
 
-        if self.processor is None:
-            # The default range for the number of visual tokens per image in the model is 4-16384. You can set min_pixels and max_pixels according to your needs, such as a token count range of 256-1280, to balance speed and memory usage.
-            self.processor = AutoProcessor.from_pretrained(
-                self.model_checkpoint, min_pixels=min_pixels, max_pixels=max_pixels
+        self.processor = AutoProcessor.from_pretrained(
+            self.model_checkpoint, min_pixels=min_pixels, max_pixels=max_pixels
+        )
+
+        if quantization == "4bit":
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
             )
-
-        if self.model is None:
-            # Load the model on the available device(s)
-            if quantization == "4bit":
-                quantization_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                )
-            elif quantization == "8bit":
-                quantization_config = BitsAndBytesConfig(
-                    load_in_8bit=True,
-                )
-            else:
-                quantization_config = None
-
-            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                self.model_checkpoint,
-                torch_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
-                device_map="auto",
-                attn_implementation=attention,
-                quantization_config=quantization_config,
+        elif quantization == "8bit":
+            quantization_config = BitsAndBytesConfig(
+                load_in_8bit=True,
             )
+        else:
+            quantization_config = None
 
-        temp_path = None
-        if image is not None:
-            pil_image = ToPILImage()(image[0].permute(2, 0, 1))
-            temp_path = f"/var/tmp/temp_image_{seed}.png"
-            pil_image.save(temp_path)
+        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            self.model_checkpoint,
+            torch_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
+            device_map="auto",
+            attn_implementation=attention,
+            quantization_config=quantization_config,
+            use_fast=False
+        )
 
         with torch.no_grad():
             print(source_path)
@@ -161,12 +157,12 @@ class Qwen2_VQA:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "video", "video": source_path},  # ✅ Drop "file://"
+                            {"type": "video", "video": source_path}, 
                             {"type": "text", "text": text},
                         ],
                     },
                 ]
-            elif temp_path:
+            elif image_path:
                 messages = [
                     {
                         "role": "system",
@@ -175,7 +171,7 @@ class Qwen2_VQA:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "image", "image": f"file://{temp_path}"},
+                            {"type": "image", "image": f"file://{image_path}"},
                             {"type": "text", "text": text},
                         ],
                     },
@@ -195,15 +191,16 @@ class Qwen2_VQA:
                 messages, tokenize=False, add_generation_prompt=True
             )
             image_inputs, video_inputs = process_vision_info(messages)
+
             inputs = self.processor(
+                use_fast=True,
                 text=[text],
                 images=image_inputs,
                 videos=video_inputs,
                 padding=True,
-                return_tensors="pt",
+                return_tensors="pt",            
             )
             inputs = inputs.to(self.device)
-            # Inference: Generation of the output
             generated_ids = self.model.generate(
                 **inputs, max_new_tokens=max_new_tokens, temperature=temperature
             )
@@ -215,7 +212,7 @@ class Qwen2_VQA:
                 generated_ids_trimmed,
                 skip_special_tokens=True,
                 clean_up_tokenization_spaces=False,
-                temperature=temperature,
+                temperature=temperature
             )
 
             if not keep_model_loaded:
@@ -227,24 +224,21 @@ class Qwen2_VQA:
                     torch.cuda.empty_cache()  # release GPU memory
                     torch.cuda.ipc_collect()
 
-            split_result = str(result).split("\n")
-            joined_result_str = "\n".join(split_result)
+            # split_result = str(result).split("\n")
+            # joined_result_str = "\n".join(split_result)
 
             return result
-            print(joined_result_str)
 
-            # url = "http://localhost:8000/video-processor/"
-            # payload = {
-            #     "processor": "Qwen2-VL-Instruct",
-            #     "response": joined_result_str,
-            #     "time_to_process": 0
-            # }
+# MARK: Gemma
 
-            # response = requests.post(url, json=payload)
+def tensor2pil(image):
+    return Image.fromarray(
+        np.clip(255.0 * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8)
+    )
 
 class Gemma3ModelLoader:
     def load_model(self, model_id, load_local_model, *args, **kwargs):
-        device = 'cuda:0'
+        device = mm.get_torch_device()
         
         if load_local_model:
             from huggingface_hub import snapshot_download
