@@ -45,6 +45,14 @@ app = FastAPI(
     description="API for processing video and audio for StadPrin",
     version="1.0.0"
 )
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Ensure the executor in video_processing is properly shutdown
+    if hasattr(video_processing, 'executor') and video_processing.executor:
+        video_processing.executor.shutdown(wait=True)
+        logger.info("ThreadPoolExecutor shutdown completed")
+
 app.include_router(video_processing.router)
 
 @app.get("/")

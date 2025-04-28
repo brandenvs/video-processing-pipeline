@@ -3,6 +3,7 @@ from typing import Optional
 from pydantic import BaseModel
 import torch
 import numpy as np
+import gc
 import cv2
 import asyncio
 
@@ -39,20 +40,38 @@ router = APIRouter(
 
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import HTTPException
+import atexit
+import functools
 
 # Create executor at app startup
 executor = ThreadPoolExecutor(max_workers=4)
 
-import functools
+# Register cleanup function to ensure executor is shutdown
+def cleanup_executor():
+    executor.shutdown(wait=True)
+    
+atexit.register(cleanup_executor)
 
 @router.post("/process/")
 async def process_video(request_body: BaseProcessor):
     loop = asyncio.get_running_loop()
     try:
+        # Ensure memory is cleared before running inference
+        torch.cuda.empty_cache()
+        gc.collect()
+        
         inference_task = functools.partial(model_manager.inference, **request_body.model_dump())
         generated_data = await loop.run_in_executor(executor, inference_task)
+        
+        # Clear memory after inference
+        torch.cuda.empty_cache()
+        gc.collect()
+        
         return [{"results": generated_data}]
     except Exception as e:
+        # Clean memory on error
+        torch.cuda.empty_cache()
+        gc.collect()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -82,9 +101,12 @@ class Qwen2_VQA:
             torch.cuda.is_available()
             and torch.cuda.get_device_capability(self.device)[0] >= 8
         )
-        self.load_model()
-
-    def load_model(self, quantization=None, attention='eager'):
+        self._model_loaded = False
+        
+    def load_model(self, quantization="4bit", attention='eager'):
+        # Skip loading if already loaded
+        if self._model_loaded:
+            return
         torch.manual_seed(-1)
         model_id = "qwen/Qwen2.5-VL-3B-Instruct"
         self.model_checkpoint = os.path.join("models/prompt_generator", os.path.basename(model_id))
@@ -93,10 +115,14 @@ class Qwen2_VQA:
             from huggingface_hub import snapshot_download
             snapshot_download(repo_id=model_id, local_dir=self.model_checkpoint)
 
-        self.processor = AutoProcessor.from_pretrained(self.model_checkpoint, min_pixels=200704, max_pixels=1003520)
+        # Use more conservative image size limits to reduce memory usage
+        self.processor = AutoProcessor.from_pretrained(self.model_checkpoint, min_pixels=200704, max_pixels=640000)
         if quantization == "4bit":
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
             )
         elif quantization == "8bit":
             quantization_config = BitsAndBytesConfig(
@@ -105,13 +131,22 @@ class Qwen2_VQA:
         else:
             quantization_config = None
 
+        # Clean memory before loading model
+        torch.cuda.empty_cache()
+        gc.collect()
+
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_checkpoint,
             torch_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
             device_map="auto",
             attn_implementation=attention,
             quantization_config=quantization_config,
+            max_memory={0: "10GiB"},
+            low_cpu_mem_usage=True,
         )
+        
+        # Mark model as loaded
+        self._model_loaded = True
 
     def inference(
         self,
@@ -121,87 +156,141 @@ class Qwen2_VQA:
         source_path=None,
         image_path=None,
     ):
-        with torch.no_grad():
-            if source_path:
-                messages = [
-                    {
-                        "role": "system",
-                        "content":
-                        "You are a detailed visual analysis system. Analyze the provided visual content and output the following information in structured JSON format:\n",
+        try:
+            # Ensure model is loaded
+            if not self._model_loaded:
+                self.load_model()
+                
+            # Clean memory before inference
+            torch.cuda.empty_cache()
+            gc.collect()
+            
+            with torch.no_grad():
+                if source_path:
+                    messages = [
+                        {
+                            "role": "system",
+                            "content":
+                            "You are a detailed visual analysis system. Analyze the provided visual content and output the following information in structured JSON format:\n",
 
-                        "frame_description": 
-                        "Detailed description of all visible objects, locations, lighting, and activity","license_plates": "All visible car license plates exactly as they appear (or partially if obscured)\n",
+                            "frame_description": 
+                            "Detailed description of all visible objects, locations, lighting, and activity","license_plates": "All visible car license plates exactly as they appear (or partially if obscured)\n",
 
-                        "scene_sentiment": 
-                        "Assessment of whether the environment appears peaceful, neutral, or dangerous, with justification\n",
+                            "scene_sentiment": 
+                            "Assessment of whether the environment appears peaceful, neutral, or dangerous, with justification\n",
 
-                        "people_nearby": 
-                        "Description of all people in focus, including estimated age range, clothing, behavior, and interactions\n",
+                            "people_nearby": 
+                            "Description of all people in focus, including estimated age range, clothing, behavior, and interactions\n",
 
-                        "risk_analysis": "Any signs of risk, conflict, or abnormal activity"
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "video", "video": source_path}, 
-                            {"type": "text", "text": system_prompt},
-                        ],
-                    },
+                            "risk_analysis": "Any signs of risk, conflict, or abnormal activity"
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "video", "video": source_path}, 
+                                {"type": "text", "text": system_prompt},
+                            ],
+                        },
+                    ]
+                elif image_path:
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": "You are QwenVL, you are a helpful assistant expert in turning images into words.",
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": f"file://{image_path}"},
+                                {"type": "text", "text": system_prompt},
+                            ],
+                        },
+                    ]
+                else:
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": system_prompt},
+                            ],
+                        }
+                    ]
+
+                # Preparation for inference
+                system_prompt = self.processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+                
+                # Process vision info in a memory-efficient way
+                image_inputs, video_inputs = process_vision_info(messages)
+                
+                # Clear some memory after processing vision info
+                torch.cuda.empty_cache()
+                
+                inputs = self.processor(
+                    text=[system_prompt],
+                    images=image_inputs,
+                    videos=video_inputs,
+                    padding=True,
+                    return_tensors="pt",            
+                )
+
+                # Move inputs to device efficiently
+                for key in inputs:
+                    if isinstance(inputs[key], torch.Tensor):
+                        inputs[key] = inputs[key].to(self.device)
+                
+                # Clear memory before generation
+                torch.cuda.empty_cache()
+                gc.collect()
+
+                # Use more memory-efficient generation settings
+                generated_ids = self.model.generate(
+                    **inputs, 
+                    max_new_tokens=max_new_tokens, 
+                    temperature=temperature,
+                    do_sample=(temperature > 0),
+                    use_cache=True
+                )
+                
+                # Store input_ids before deleting inputs
+                input_ids = inputs.input_ids.clone()
+                
+                # Free memory from inputs after generation
+                del inputs
+                torch.cuda.empty_cache()
+                
+                generated_ids_trimmed = [
+                    out_ids[len(in_ids) :]
+                    for in_ids, out_ids in zip(input_ids, generated_ids)
                 ]
-            elif image_path:
-                messages = [
-                    {
-                        "role": "system",
-                        "content": "You are QwenVL, you are a helpful assistant expert in turning images into words.",
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": f"file://{image_path}"},
-                            {"type": "text", "text": system_prompt},
-                        ],
-                    },
-                ]
-            else:
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": system_prompt},
-                        ],
-                    }
-                ]
+                
+                # Free memory from input_ids
+                del input_ids
+                
+                # Free more memory
+                del generated_ids
+                torch.cuda.empty_cache()
+                
+                result = self.processor.batch_decode(
+                    generated_ids_trimmed,
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=False
+                )
+                
+                # Clear everything from memory
+                del generated_ids_trimmed
+                torch.cuda.empty_cache()
+                gc.collect()
+                
+                return result
+                
+        except Exception as e:
+            torch.cuda.empty_cache()
+            gc.collect()
+            return f'Error: {str(e)}'
 
-            # Preparation for inference
-            system_prompt = self.processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            image_inputs, video_inputs = process_vision_info(messages)
-
-            inputs = self.processor(
-                text=[system_prompt],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt",            
-            )
-            inputs = inputs.to(self.device)
-            generated_ids = self.model.generate(
-                **inputs, max_new_tokens=max_new_tokens, temperature=temperature
-            )
-            generated_ids_trimmed = [
-                out_ids[len(in_ids) :]
-                for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-            result = self.processor.batch_decode(
-                generated_ids_trimmed,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-                temperature=temperature
-            )
-            return result
-        return 'Error'
-
+# Initialize the model manager but don't load model yet
 model_manager = Qwen2_VQA()
 
 # MARK: Gemma
@@ -212,8 +301,19 @@ def tensor2pil(image):
     )
 
 class Gemma3ModelLoader:
+    def __init__(self):
+        self._loaded_models = {}
+        
     def load_model(self, model_id, load_local_model, *args, **kwargs):
+        # If we've already loaded this model, return it
+        if model_id in self._loaded_models:
+            return self._loaded_models[model_id]
+            
         device = mm.get_torch_device()
+        
+        # Clean memory before loading model
+        torch.cuda.empty_cache()
+        gc.collect()
         
         if load_local_model:
             from huggingface_hub import snapshot_download
@@ -230,14 +330,31 @@ class Gemma3ModelLoader:
         else:
             # Use the provided model_id directly
             model_path = model_id
+        
+        # Configure quantization for memory efficiency
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
             
         # Load the correct model architecture based on the model_id
         model = (
-            Gemma3ForConditionalGeneration.from_pretrained(model_path, device_map="auto")
+            Gemma3ForConditionalGeneration.from_pretrained(
+                model_path, 
+                device_map="auto",
+                quantization_config=quantization_config,
+                max_memory={0: "10GiB"},
+                low_cpu_mem_usage=True
+            )
             .eval()
-            .to(device)
         )
         processor = AutoProcessor.from_pretrained(model_path)
+        
+        # Cache the loaded model and processor
+        self._loaded_models[model_id] = (model, processor)
+        
         return (model, processor)
 
 class ApplyGemma3:
@@ -300,6 +417,7 @@ class ApplyGemma3:
 
 # if __name__ == "__main__":
 #     qwen_vqa = Qwen2_VQA()
+
 
 #     # Example parameters
 #     text = "Describe the scene in the image."
