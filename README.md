@@ -1,3 +1,3 @@
 ### TODO
 
-- [] Draw Flow diagram that represent memory allocation accross the pipeline.
+- [ ] Draw a Flow diagram that represents memory allocation across the pipeline.
