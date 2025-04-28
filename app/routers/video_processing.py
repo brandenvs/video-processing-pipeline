@@ -6,6 +6,7 @@ import numpy as np
 import gc
 import cv2
 import asyncio
+import logging
 
 from torchvision.transforms import ToPILImage
 from transformers import (
@@ -21,7 +22,8 @@ from app.routers import model_management as mm
 
 from fastapi import APIRouter, Depends
 
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# Configure CUDA memory allocation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:512"
 
 class BaseProcessor(BaseModel):
     system_prompt: Optional[str] = 'Perform a detailed analysis of the given data'
@@ -102,11 +104,28 @@ class Qwen2_VQA:
             and torch.cuda.get_device_capability(self.device)[0] >= 8
         )
         self._model_loaded = False
+        self._last_used = 0
+        
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
         
     def load_model(self, quantization="4bit", attention='eager'):
         # Skip loading if already loaded
         if self._model_loaded:
             return
+            
+        # Clean memory before loading model
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+        # Check if we have enough memory to load the model
+        free_mem_gb = mm.get_free_memory(self.device) / (1024 * 1024 * 1024)
+        if free_mem_gb < 6:  # Need at least 6GB for 4-bit quantized model
+            logging.warning(f"Low GPU memory detected: {free_mem_gb:.2f}GB available. This may cause issues.")
+            
         torch.manual_seed(-1)
         model_id = "qwen/Qwen2.5-VL-3B-Instruct"
         self.model_checkpoint = os.path.join("models/prompt_generator", os.path.basename(model_id))
@@ -116,7 +135,11 @@ class Qwen2_VQA:
             snapshot_download(repo_id=model_id, local_dir=self.model_checkpoint)
 
         # Use more conservative image size limits to reduce memory usage
-        self.processor = AutoProcessor.from_pretrained(self.model_checkpoint, min_pixels=200704, max_pixels=640000)
+        self.processor = AutoProcessor.from_pretrained(
+            self.model_checkpoint, 
+            min_pixels=153600,  # Reduced: 480x320
+            max_pixels=409600   # Reduced: 640x640
+        )
         if quantization == "4bit":
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -135,13 +158,22 @@ class Qwen2_VQA:
         torch.cuda.empty_cache()
         gc.collect()
 
+        # Get available GPU memory dynamically
+        free_mem = mm.get_free_memory(self.device)
+        # Set a reasonable limit (80% of available memory)
+        memory_limit = int(free_mem * 0.8 / (1024 * 1024 * 1024))
+        # Use at least 4GB but no more than available memory minus 2GB safety margin
+        memory_limit = max(4, min(memory_limit, int(free_mem / (1024 * 1024 * 1024)) - 2))
+        
+        logging.info(f"Loading model with {memory_limit}GiB memory limit (available: {free_mem/(1024*1024*1024):.2f}GiB)")
+        
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_checkpoint,
             torch_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
             device_map="auto",
             attn_implementation=attention,
             quantization_config=quantization_config,
-            max_memory={0: "10GiB"},
+            max_memory={0: f"{memory_limit}GiB"},
             low_cpu_mem_usage=True,
         )
         
@@ -224,16 +256,40 @@ class Qwen2_VQA:
                 # Process vision info in a memory-efficient way
                 image_inputs, video_inputs = process_vision_info(messages)
                 
-                # Clear some memory after processing vision info
+                # Clear memory after processing vision info
                 torch.cuda.empty_cache()
+                gc.collect()
                 
-                inputs = self.processor(
-                    text=[system_prompt],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt",            
-                )
+                # Check memory before processor step
+                free_mem = mm.get_free_memory(self.device) / (1024 * 1024 * 1024)
+                logging.info(f"Memory before processor: {free_mem:.2f}GB")
+                
+                try:
+                    # Process with smaller batch size if needed
+                    max_frames = 8  # Limit number of video frames processed at once
+                    inputs = self.processor(
+                        text=[system_prompt],
+                        images=image_inputs,
+                        videos=video_inputs[:max_frames] if video_inputs and len(video_inputs) > max_frames else video_inputs,
+                        padding=True,
+                        return_tensors="pt",            
+                    )
+                except RuntimeError as e:
+                    # If we still run out of memory, try again with even smaller batch
+                    if "CUDA out of memory" in str(e):
+                        logging.warning("CUDA OOM during processing, reducing batch size further")
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        max_frames = 4  # Even smaller batch
+                        inputs = self.processor(
+                            text=[system_prompt],
+                            images=image_inputs,
+                            videos=video_inputs[:max_frames] if video_inputs and len(video_inputs) > max_frames else video_inputs,
+                            padding=True,
+                            return_tensors="pt",            
+                        )
+                    else:
+                        raise
 
                 # Move inputs to device efficiently
                 for key in inputs:
@@ -244,14 +300,51 @@ class Qwen2_VQA:
                 torch.cuda.empty_cache()
                 gc.collect()
 
-                # Use more memory-efficient generation settings
-                generated_ids = self.model.generate(
-                    **inputs, 
-                    max_new_tokens=max_new_tokens, 
-                    temperature=temperature,
-                    do_sample=(temperature > 0),
-                    use_cache=True
-                )
+                # Check memory before generation
+                free_mem = mm.get_free_memory(self.device) / (1024 * 1024 * 1024)
+                logging.info(f"Memory before generation: {free_mem:.2f}GB")
+                
+                try:
+                    # Use more memory-efficient generation settings
+                    generated_ids = self.model.generate(
+                        **inputs, 
+                        max_new_tokens=min(max_new_tokens, 256),  # Limit max tokens if needed 
+                        temperature=temperature,
+                        do_sample=(temperature > 0),
+                        use_cache=True,
+                        repetition_penalty=1.2  # Helps with memory efficiency
+                    )
+                except RuntimeError as e:
+                    if "CUDA out of memory" in str(e):
+                        # Last resort - try CPU fallback
+                        logging.warning("CUDA OOM during generation, attempting CPU fallback")
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        
+                        # Move inputs to CPU
+                        cpu_inputs = {}
+                        for key in inputs:
+                            if isinstance(inputs[key], torch.Tensor):
+                                cpu_inputs[key] = inputs[key].cpu()
+                            else:
+                                cpu_inputs[key] = inputs[key]
+                        
+                        # Move model to CPU temporarily
+                        self.model = self.model.cpu()
+                        
+                        # Generate on CPU with minimal parameters
+                        generated_ids = self.model.generate(
+                            **cpu_inputs, 
+                            max_new_tokens=128,  # Much shorter on CPU
+                            temperature=0,       # No sampling on CPU
+                            do_sample=False,
+                            use_cache=True
+                        )
+                        
+                        # Move model back to GPU after generation
+                        self.model = self.model.to(self.device)
+                    else:
+                        raise
                 
                 # Store input_ids before deleting inputs
                 input_ids = inputs.input_ids.clone()
