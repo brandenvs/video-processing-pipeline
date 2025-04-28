@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Optional
 from pydantic import BaseModel
 import torch
@@ -76,6 +77,17 @@ async def process_video(request_body: BaseProcessor):
         gc.collect()
         raise HTTPException(status_code=500, detail=str(e))
 
+from moviepy import VideoFileClip
+
+# def split_video_into_batches(video_path, batch_duration=2):
+   
+    
+#     # Optionally, save the batches as separate files
+
+
+# Usage example
+# split_video_into_batches("your_video.mp4", batch_duration=2)
+
 
 # @router.post("/process/")
 # async def process_video(request_body: BaseProcessor):
@@ -108,11 +120,12 @@ class Qwen2_VQA:
         
         # Configure logging
         logging.basicConfig(
+            filename='application.log',
             level=logging.INFO,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         
-    def load_model(self, quantization="4bit", attention='eager'):
+    def load_model(self, quantization=None, attention='eager'):
         # Skip loading if already loaded
         if self._model_loaded:
             return
@@ -188,99 +201,103 @@ class Qwen2_VQA:
         source_path=None,
         image_path=None,
     ):
-        try:
-            # Ensure model is loaded
-            if not self._model_loaded:
-                self.load_model()
-                
-            # Clean memory before inference
-            torch.cuda.empty_cache()
-            gc.collect()
-            
-            with torch.no_grad():
-                if source_path:
-                    messages = [
-                        {
-                            "role": "system",
-                            "content":
-                            "You are a detailed visual analysis system. Analyze the provided visual content and output the following information in structured JSON format:\n",
-
-                            "frame_description": 
-                            "Detailed description of all visible objects, locations, lighting, and activity","license_plates": "All visible car license plates exactly as they appear (or partially if obscured)\n",
-
-                            "scene_sentiment": 
-                            "Assessment of whether the environment appears peaceful, neutral, or dangerous, with justification\n",
-
-                            "people_nearby": 
-                            "Description of all people in focus, including estimated age range, clothing, behavior, and interactions\n",
-
-                            "risk_analysis": "Any signs of risk, conflict, or abnormal activity"
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "video", "video": source_path}, 
-                                {"type": "text", "text": system_prompt},
-                            ],
-                        },
-                    ]
-                elif image_path:
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": "You are QwenVL, you are a helpful assistant expert in turning images into words.",
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image", "image": f"file://{image_path}"},
-                                {"type": "text", "text": system_prompt},
-                            ],
-                        },
-                    ]
-                else:
-                    messages = [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": system_prompt},
-                            ],
-                        }
-                    ]
-
-                # Preparation for inference
-                system_prompt = self.processor.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
-                
-                # Process vision info in a memory-efficient way
-                image_inputs, video_inputs = process_vision_info(messages)
-                
-                # Clear memory after processing vision info
+        # Load the video
+        video = VideoFileClip(source_path)
+        
+        # Get the duration of the video
+        video_duration = video.duration
+        batch_duration=2
+        # Split the video into batches of specified duration
+        batches = []
+        for start_time in range(0, int(video_duration), batch_duration):
+            end_time = min(start_time + batch_duration, video_duration)
+            batch = video.subclipped(start_time, end_time)
+            batches.append(batch)
+        for idx, batch in enumerate(batches):
+            batch_filename = f"data/batch_{idx+1}.mp4"
+            batch.write_videofile(batch_filename, codec="libx264")
+            print(f"Batch {idx+1} saved as {batch_filename}")
+        data_dir = Path('./data')
+        for filename in os.listdir(data_dir):
+            file_path = os.path.join(data_dir, filename)
+            try:
+                # Ensure model is loaded
+                if not self._model_loaded:
+                    self.load_model()
+                    
+                # Clean memory before inference
                 torch.cuda.empty_cache()
                 gc.collect()
                 
-                # Check memory before processor step
-                free_mem = mm.get_free_memory(self.device) / (1024 * 1024 * 1024)
-                logging.info(f"Memory before processor: {free_mem:.2f}GB")
-                
-                try:
-                    # Process with smaller batch size if needed
-                    max_frames = 8  # Limit number of video frames processed at once
-                    inputs = self.processor(
-                        text=[system_prompt],
-                        images=image_inputs,
-                        videos=video_inputs[:max_frames] if video_inputs and len(video_inputs) > max_frames else video_inputs,
-                        padding=True,
-                        return_tensors="pt",            
+                with torch.no_grad():
+                    if source_path:
+                        messages = [
+                            {
+                                "role": "system",
+                                "content":
+                                "You are a detailed visual analysis system. Analyze the provided visual content and output the following information in structured JSON format:\n",
+
+                                "frame_description": 
+                                "Detailed description of all visible objects, locations, lighting, and activity","license_plates": "All visible car license plates exactly as they appear (or partially if obscured)\n",
+
+                                "scene_sentiment": 
+                                "Assessment of whether the environment appears peaceful, neutral, or dangerous, with justification\n",
+
+                                "people_nearby": 
+                                "Description of all people in focus, including estimated age range, clothing, behavior, and interactions\n",
+
+                                "risk_analysis": "Any signs of risk, conflict, or abnormal activity"
+                            },
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "video", "video": file_path}, 
+                                    {"type": "text", "text": system_prompt},
+                                ],
+                            },
+                        ]
+                    elif image_path:
+                        messages = [
+                            {
+                                "role": "system",
+                                "content": "You are QwenVL, you are a helpful assistant expert in turning images into words.",
+                            },
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "image", "image": f"file://{image_path}"},
+                                    {"type": "text", "text": system_prompt},
+                                ],
+                            },
+                        ]
+                    else:
+                        messages = [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": system_prompt},
+                                ],
+                            }
+                        ]
+
+                    # Preparation for inference
+                    system_prompt = self.processor.apply_chat_template(
+                        messages, tokenize=False, add_generation_prompt=True
                     )
-                except RuntimeError as e:
-                    # If we still run out of memory, try again with even smaller batch
-                    if "CUDA out of memory" in str(e):
-                        logging.warning("CUDA OOM during processing, reducing batch size further")
-                        torch.cuda.empty_cache()
-                        gc.collect()
-                        max_frames = 4  # Even smaller batch
+                    
+                    # Process vision info in a memory-efficient way
+                    image_inputs, video_inputs = process_vision_info(messages)
+                    
+                    # Clear memory after processing vision info
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    
+                    # Check memory before processor step
+                    free_mem = mm.get_free_memory(self.device) / (1024 * 1024 * 1024)
+                    logging.info(f"Memory before processor: {free_mem:.2f}GB")
+                    
+                    try:
+                        max_frames = 8
                         inputs = self.processor(
                             text=[system_prompt],
                             images=image_inputs,
@@ -288,100 +305,114 @@ class Qwen2_VQA:
                             padding=True,
                             return_tensors="pt",            
                         )
-                    else:
-                        raise
+                    except RuntimeError as e:
+                        # If we still run out of memory, try again with even smaller batch
+                        if "CUDA out of memory" in str(e):
+                            logging.warning("CUDA OOM during processing, reducing batch size further")
+                            torch.cuda.empty_cache()
+                            gc.collect()
+                            max_frames = 4  # Even smaller batch
+                            inputs = self.processor(
+                                text=[system_prompt],
+                                images=image_inputs,
+                                videos=video_inputs[:max_frames] if video_inputs and len(video_inputs) > max_frames else video_inputs,
+                                padding=True,
+                                return_tensors="pt",            
+                            )
+                        else:
+                            raise
 
-                # Move inputs to device efficiently
-                for key in inputs:
-                    if isinstance(inputs[key], torch.Tensor):
-                        inputs[key] = inputs[key].to(self.device)
-                
-                # Clear memory before generation
-                torch.cuda.empty_cache()
-                gc.collect()
+                    # Move inputs to device efficiently
+                    for key in inputs:
+                        if isinstance(inputs[key], torch.Tensor):
+                            inputs[key] = inputs[key].to(self.device)
+                    
+                    # Clear memory before generation
+                    torch.cuda.empty_cache()
+                    gc.collect()
 
-                # Check memory before generation
-                free_mem = mm.get_free_memory(self.device) / (1024 * 1024 * 1024)
-                logging.info(f"Memory before generation: {free_mem:.2f}GB")
-                
-                try:
-                    # Use more memory-efficient generation settings
-                    generated_ids = self.model.generate(
-                        **inputs, 
-                        max_new_tokens=min(max_new_tokens, 256),  # Limit max tokens if needed 
-                        temperature=temperature,
-                        do_sample=(temperature > 0),
-                        use_cache=True,
-                        repetition_penalty=1.2  # Helps with memory efficiency
-                    )
-                except RuntimeError as e:
-                    if "CUDA out of memory" in str(e):
-                        # Last resort - try CPU fallback
-                        logging.warning("CUDA OOM during generation, attempting CPU fallback")
-                        torch.cuda.empty_cache()
-                        gc.collect()
-                        
-                        # Move inputs to CPU
-                        cpu_inputs = {}
-                        for key in inputs:
-                            if isinstance(inputs[key], torch.Tensor):
-                                cpu_inputs[key] = inputs[key].cpu()
-                            else:
-                                cpu_inputs[key] = inputs[key]
-                        
-                        # Move model to CPU temporarily
-                        self.model = self.model.cpu()
-                        
-                        # Generate on CPU with minimal parameters
+                    # Check memory before generation
+                    free_mem = mm.get_free_memory(self.device) / (1024 * 1024 * 1024)
+                    logging.info(f"Memory before generation: {free_mem:.2f}GB")
+                    
+                    try:
+                        # Use more memory-efficient generation settings
                         generated_ids = self.model.generate(
-                            **cpu_inputs, 
-                            max_new_tokens=128,  # Much shorter on CPU
-                            temperature=0,       # No sampling on CPU
-                            do_sample=False,
-                            use_cache=True
+                            **inputs, 
+                            max_new_tokens=min(max_new_tokens, 256),  # Limit max tokens if needed 
+                            temperature=temperature,
+                            do_sample=(temperature > 0),
+                            use_cache=True,
+                            repetition_penalty=1.2  # Helps with memory efficiency
                         )
-                        
-                        # Move model back to GPU after generation
-                        self.model = self.model.to(self.device)
-                    else:
-                        raise
-                
-                # Store input_ids before deleting inputs
-                input_ids = inputs.input_ids.clone()
-                
-                # Free memory from inputs after generation
-                del inputs
-                torch.cuda.empty_cache()
-                
-                generated_ids_trimmed = [
-                    out_ids[len(in_ids) :]
-                    for in_ids, out_ids in zip(input_ids, generated_ids)
-                ]
-                
-                # Free memory from input_ids
-                del input_ids
-                
-                # Free more memory
-                del generated_ids
-                torch.cuda.empty_cache()
-                
-                result = self.processor.batch_decode(
-                    generated_ids_trimmed,
-                    skip_special_tokens=True,
-                    clean_up_tokenization_spaces=False
-                )
-                
-                # Clear everything from memory
-                del generated_ids_trimmed
+                    except RuntimeError as e:
+                        if "CUDA out of memory" in str(e):
+                            # Last resort - try CPU fallback
+                            logging.warning("CUDA OOM during generation, attempting CPU fallback")
+                            torch.cuda.empty_cache()
+                            gc.collect()
+                            
+                            # Move inputs to CPU
+                            cpu_inputs = {}
+                            for key in inputs:
+                                if isinstance(inputs[key], torch.Tensor):
+                                    cpu_inputs[key] = inputs[key].cpu()
+                                else:
+                                    cpu_inputs[key] = inputs[key]
+                            
+                            # Move model to CPU temporarily
+                            self.model = self.model.cpu()
+                            
+                            # Generate on CPU with minimal parameters
+                            generated_ids = self.model.generate(
+                                **cpu_inputs, 
+                                max_new_tokens=128,  # Much shorter on CPU
+                                temperature=0,       # No sampling on CPU
+                                do_sample=False,
+                                use_cache=True
+                            )
+                            
+                            # Move model back to GPU after generation
+                            self.model = self.model.to(self.device)
+                        else:
+                            raise
+                    
+                    # Store input_ids before deleting inputs
+                    input_ids = inputs.input_ids.clone()
+                    
+                    # Free memory from inputs after generation
+                    del inputs
+                    torch.cuda.empty_cache()
+                    
+                    generated_ids_trimmed = [
+                        out_ids[len(in_ids) :]
+                        for in_ids, out_ids in zip(input_ids, generated_ids)
+                    ]
+                    
+                    # Free memory from input_ids
+                    del input_ids
+                    
+                    # Free more memory
+                    del generated_ids
+                    torch.cuda.empty_cache()
+                    
+                    result = self.processor.batch_decode(
+                        generated_ids_trimmed,
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=False
+                    )
+                    
+                    # Clear everything from memory
+                    del generated_ids_trimmed
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    
+                    return result
+                    
+            except Exception as e:
                 torch.cuda.empty_cache()
                 gc.collect()
-                
-                return result
-                
-        except Exception as e:
-            torch.cuda.empty_cache()
-            gc.collect()
-            return f'Error: {str(e)}'
+                return f'Error: {str(e)}'
 
 # Initialize the model manager but don't load model yet
 model_manager = Qwen2_VQA()
