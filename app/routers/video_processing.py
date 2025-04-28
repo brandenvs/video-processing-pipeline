@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import torch
 import numpy as np
 import cv2
+import asyncio
 
 from torchvision.transforms import ToPILImage
 from transformers import (
@@ -22,19 +23,11 @@ from fastapi import APIRouter, Depends
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 class BaseProcessor(BaseModel):
-    processor: str
-    model: Optional[str] = "Qwen2.5-VL-3B-Instruct"
     system_prompt: Optional[str] = 'Perform a detailed analysis of the given data'
-    keep_model_loaded: Optional[bool] = False
     temperature: Optional[float] = 0.5
     max_new_tokens: Optional[int] = 512
-    min_pixels: Optional[int] = 200704
-    max_pixels: Optional[int] = 1003520 
-    seed: Optional[int] = -1
-    quantization: Optional[str] = "8bit"
     source_path: Optional[str] = None
     image_path: Optional[str] = None
-    attention: Optional[str] = "eager"
 
 router = APIRouter()
 
@@ -43,27 +36,39 @@ router = APIRouter(
     tags=["process"],
     responses={404: {"description": "Not found"}},
 )
-@router.post("/process/", tags=["process"])
+
+from concurrent.futures import ThreadPoolExecutor
+from fastapi import HTTPException
+
+# Create executor at app startup
+executor = ThreadPoolExecutor(max_workers=4)
+
+import functools
+
+@router.post("/process/")
 async def process_video(request_body: BaseProcessor):
-    qwen_vqa = Qwen2_VQA()
+    loop = asyncio.get_running_loop()
+    try:
+        inference_task = functools.partial(model_manager.inference, **request_body.model_dump())
+        generated_data = await loop.run_in_executor(executor, inference_task)
+        return [{"results": generated_data}]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    generated_data = qwen_vqa.inference(
-        text=request_body.system_prompt,
-        model=request_body.model,
-        keep_model_loaded=request_body.keep_model_loaded,
-        temperature=request_body.temperature,
-        max_new_tokens=request_body.max_new_tokens,
-        min_pixels=request_body.min_pixels,
-        max_pixels=request_body.max_pixels,
-        seed=request_body.seed,
-        quantization=request_body.quantization,
-        source_path=request_body.source_path,
-        image_path=request_body.image_path,
-        attention=request_body.attention,
-    )
 
-    print(generated_data)
-    return [{"results":generated_data }]
+# @router.post("/process/")
+# async def process_video(request_body: BaseProcessor):
+#     loop = asyncio.get_running_loop()
+#     result = await loop.run_in_executor(None, qwen_vqa.inference, ...)
+
+#     qwen_vqa = Qwen2_VQA()
+
+#     generated_data = qwen_vqa.inference(
+
+#     )
+
+#     print(generated_data)
+#     return [{"results":generated_data }]
 
 # MARK: Qwen
 
@@ -77,43 +82,18 @@ class Qwen2_VQA:
             torch.cuda.is_available()
             and torch.cuda.get_device_capability(self.device)[0] >= 8
         )
-        print(mm.get_torch_device())
+        self.load_model()
 
-    def inference(
-        self,
-        text,
-        model,
-        keep_model_loaded,
-        temperature,
-        max_new_tokens,
-        min_pixels,
-        max_pixels,
-        seed,
-        quantization,
-        source_path=None,
-        image_path=None,
-        attention="eager",
-    ):
-        if seed != -1:
-            torch.manual_seed(seed)
+    def load_model(self, quantization=None, attention='eager'):
+        torch.manual_seed(-1)
+        model_id = "qwen/Qwen2.5-VL-3B-Instruct"
+        self.model_checkpoint = os.path.join("models/prompt_generator", os.path.basename(model_id))
         
-        model_id = f"qwen/{model}"
-        self.model_checkpoint = os.path.join(
-            "models/prompt_generator", os.path.basename(model_id)
-        )
-
         if not os.path.exists(self.model_checkpoint):
             from huggingface_hub import snapshot_download
+            snapshot_download(repo_id=model_id, local_dir=self.model_checkpoint)
 
-            snapshot_download(
-                repo_id=model_id,
-                local_dir=self.model_checkpoint,
-            )
-
-        self.processor = AutoProcessor.from_pretrained(
-            self.model_checkpoint, min_pixels=min_pixels, max_pixels=max_pixels
-        )
-
+        self.processor = AutoProcessor.from_pretrained(self.model_checkpoint, min_pixels=200704, max_pixels=1003520)
         if quantization == "4bit":
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -131,11 +111,17 @@ class Qwen2_VQA:
             device_map="auto",
             attn_implementation=attention,
             quantization_config=quantization_config,
-            use_fast=False
         )
 
+    def inference(
+        self,
+        system_prompt,
+        temperature,
+        max_new_tokens,
+        source_path=None,
+        image_path=None,
+    ):
         with torch.no_grad():
-            print(source_path)
             if source_path:
                 messages = [
                     {
@@ -158,7 +144,7 @@ class Qwen2_VQA:
                         "role": "user",
                         "content": [
                             {"type": "video", "video": source_path}, 
-                            {"type": "text", "text": text},
+                            {"type": "text", "text": system_prompt},
                         ],
                     },
                 ]
@@ -172,7 +158,7 @@ class Qwen2_VQA:
                         "role": "user",
                         "content": [
                             {"type": "image", "image": f"file://{image_path}"},
-                            {"type": "text", "text": text},
+                            {"type": "text", "text": system_prompt},
                         ],
                     },
                 ]
@@ -181,20 +167,19 @@ class Qwen2_VQA:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": text},
+                            {"type": "text", "text": system_prompt},
                         ],
                     }
                 ]
 
             # Preparation for inference
-            text = self.processor.apply_chat_template(
+            system_prompt = self.processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
             image_inputs, video_inputs = process_vision_info(messages)
 
             inputs = self.processor(
-                use_fast=True,
-                text=[text],
+                text=[system_prompt],
                 images=image_inputs,
                 videos=video_inputs,
                 padding=True,
@@ -214,20 +199,10 @@ class Qwen2_VQA:
                 clean_up_tokenization_spaces=False,
                 temperature=temperature
             )
-
-            if not keep_model_loaded:
-                del self.processor  # release processor memory
-                del self.model  # release model memory
-                self.processor = None  # set processor to None
-                self.model = None  # set model to None
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()  # release GPU memory
-                    torch.cuda.ipc_collect()
-
-            # split_result = str(result).split("\n")
-            # joined_result_str = "\n".join(split_result)
-
             return result
+        return 'Error'
+
+model_manager = Qwen2_VQA()
 
 # MARK: Gemma
 
