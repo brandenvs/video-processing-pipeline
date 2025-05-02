@@ -7,5 +7,7 @@
 - [ ] Re-integrate audio to text within the pipeline (**Branden**)
 - [ ] Db writes with generated data (**Dylan**)
 
+---
+
 - [ ] Vectorizers with generated data.
 - [ ] RAG on Db vectors.
