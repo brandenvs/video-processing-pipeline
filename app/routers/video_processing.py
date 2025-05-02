@@ -34,6 +34,7 @@ from moviepy import VideoFileClip
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+# Have a dictionary with DB_CONFIG here ...
 
 class BaseProcessor(BaseModel):
     system_prompt: Optional[str] = "Perform a detailed analysis of the given data"
@@ -41,6 +42,7 @@ class BaseProcessor(BaseModel):
     max_new_tokens: Optional[int] = 512
     source_path: Optional[str] = None
 
+# Write a function that will connect to PostgreSQL database here ...
 
 router = APIRouter()
 
@@ -79,12 +81,23 @@ async def process_video(request_body: BaseProcessor):
     gc.collect()
     check_memory()
 
-    inference_task = functools.partial(
-        model_manager.inference, **request_body.model_dump()
-    )
-    generated_data = await loop.run_in_executor(executor, inference_task)
-    response = json.loads(generated_data)
-    return [{"results": response}]
+    # inference_task = functools.partial(
+    #     model_manager.inference, **request_body.model_dump()
+    # )
+    # generated_data = await loop.run_in_executor(executor, inference_task)
+    # response = json.loads(generated_data)
+
+    data = {'Frame description': 'Some Text',}
+
+    # Db writes here ...
+
+    # Columns: Table(Videos Processed)
+    # Frame description
+    # License plates
+    # People nearby
+    # Risk analysis
+
+    # return [{"results": response}]
 
 
 class Qwen2_VQA:
@@ -193,9 +206,9 @@ class Qwen2_VQA:
                 {
                     "role": "system",
                     "content": """You are a detailed visual analysis system.
-                    "Analyze the provided visual content and output the following information in structured JSON format: 
-                    Frame description: Detailed description of all visible objects, locations, lighting, and activity. L
-                    icense plates: All visible car license plates exactly as they appear (or partially if obscured). 
+                    Analyze the provided visual content and output the following information in structured JSON format: 
+                    Frame description: Detailed description of all visible objects, locations, lighting, and activity. 
+                    License plates: All visible car license plates exactly as they appear (or partially if obscured). 
                     Scene sentiment: Assessment of whether the environment appears peaceful, neutral, or dangerous, with justification. 
                     People nearby: Description of all people in focus, including estimated age range, clothing, behavior, and interactions. 
                     Risk analysis: Any signs of risk, conflict, or abnormal activity.""",
