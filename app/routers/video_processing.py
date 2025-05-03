@@ -212,7 +212,8 @@ class Qwen2_VQA:
                     Objects detected - A list of objects identified within a close proximity.
                     Cars detected - A list of JSON objects with the following properties: Car license plate(if visible), Color and Model.
                     People detected - A list of JSON objects with the following properties: Estimated Height, Age, Race, Emotional state, and proximity
-                    Scene sentiment - Either 'neutral', 'dangerous' or 'unknown'.""",
+                    Scene sentiment - Either 'neutral', 'dangerous' or 'unknown'.
+                    ID cards detected - A list of JSON objects with the following properties: Surname, Names, Sex, Nationality, Identity Number, Date of Birth, Country of Birth, Status""",
                 },
                 {
                     "role": "user",
