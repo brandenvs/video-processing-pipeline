@@ -2,7 +2,6 @@ from datetime import datetime
 import os
 import psycopg2
 from pydantic import Json
-from app.routers.db_functions import DB_CONFIG, connect_to_db # have this here 
 
 # DB_CONFIG = {
 #     "host": os.getenv("POSTGRES_HOST", "localhost"),

@@ -49,7 +49,7 @@ DB_CONFIG = {
 }
 
 # Write a function that will connect to "PostgreSQL" database here ...
-def ConnectToDb():
+def connect_to_db():
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
