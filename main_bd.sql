@@ -5,8 +5,8 @@ CREATE TABLE visual_analysis (
     license_plates TEXT[],
     scene_sentiment TEXT[],
     sentiment_justification TEXT[],
-    people_nearby JSONB,
-    risk_analysis TEXT,
+    people_nearby TEXT[],
+    risk_analysis TEXT[],
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
