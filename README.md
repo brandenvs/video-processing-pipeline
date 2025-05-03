@@ -1,11 +1,21 @@
-### TODO
+# ADP Video Pipeline
 
-- [x] Draw a Flow diagram representing memory allocation across the pipeline.
-- [x] Fix pipeline accordingly.
+## TODOs
 
-- [ ] Integrate technical document processing within the pipeline (**Liano**)
-- [ ] Re-integrate audio to text within the pipeline (**Branden**)
-- [ ] Db writes with generated data (**Dylan**)
+### Document pipeline
+
+- [ ] Integrate technical document processing within the pipeline (*unknown)
+  - [ ] Database integration(use database_service.py)
+
+### Audio pipeline
+
+- [ ] Integrate audio to text within the pipeline ([Qwen2-Audio-7B-Instruct](https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct))
+  - [ ] Database integration(use database_service.py)
+
+### Video pipeline
+
+- [x] Integrate video to text within pipeline ([Qwen2.5-VL-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct))
+  - [x] Db writes with generated data
 
 ---
 
