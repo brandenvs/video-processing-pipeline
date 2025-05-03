@@ -1,5 +1,1 @@
-from app import routers
-
-ROUTES = {
-    'Routers': routers
-}
+from .routers import ROUTES as ROUTERS

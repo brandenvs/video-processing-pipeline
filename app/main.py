@@ -13,18 +13,6 @@ from psycopg2.extras import Json
 from datetime import datetime
 from app.routers import video_processing
 
-class BaseProcessor(BaseModel):
-    processor: str
-    model: Optional[str] = "Qwen2.5-VL-3B-Instruct"
-    prompt: Optional[str] = None
-    temperature: Optional[float] = 0.0
-    max_tokens: Optional[int] = 512
-    quantization: Optional[str] = "8bit"
-    video_path: Optional[str] = None
-    image_path: Optional[str] = None
-    attention: Optional[str] = "eager"
-    keep_model_loaded: Optional[bool] = False
-
 
 class ProcessingResponse(BaseModel):
     processor: str

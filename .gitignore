@@ -11,3 +11,5 @@ data/
 local/
 .vscode/
 .random_kak_claude_did/
+
+venv/
