@@ -186,10 +186,10 @@ class Qwen2_VQA:
             batches.append(batch)
 
         for idx, batch in enumerate(batches):
-            batch_filename = f"data/batch_{idx+1}.mp4"
+            batch_filename = f"video/batch_{idx+1}.mp4"
             batch.write_videofile(batch_filename, codec="libx264")
 
-        data_dir = Path("./data")
+        data_dir = Path("./video")
 
         if not self._model_loaded:
             self.load_model()
