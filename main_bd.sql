@@ -4,9 +4,9 @@ CREATE TABLE visual_analysis (
     frame_description TEXT[],
     license_plates TEXT[],
     scene_sentiment TEXT[],
-    sentiment_justification TEXT[],
+    sentiment_justification TEXT,
     people_nearby TEXT[],
-    risk_analysis TEXT[],
+    risk_analysis TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

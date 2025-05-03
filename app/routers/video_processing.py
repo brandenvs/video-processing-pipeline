@@ -35,9 +35,7 @@ from moviepy import VideoFileClip
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-# startd here ---------------------------------------------------------------
-
-# Have a dictionary with DB_CONFIG here ...
+# Dictionary with DB_CONFIG
 DB_CONFIG = {
     "host": os.getenv("POSTGRES_HOST", "localhost"),
     "database": os.getenv("POSTGRES_DB", "stadprin"),
@@ -46,7 +44,7 @@ DB_CONFIG = {
     "port": os.getenv("POSTGRES_PORT", "5432")
 }
 
-# Write a function that will connect to "PostgreSQL" database here ...
+# Connect to "PostgreSQL" database
 def connect_to_db():
     try:
         conn = psycopg2.connect(**DB_CONFIG)
@@ -57,7 +55,6 @@ def connect_to_db():
         print(f"Failed to connect to database: {e}")
         return None, None
 
-# end here --------------------------------------------------------------------------
 
 class BaseProcessor(BaseModel):
     system_prompt: Optional[str] = "Identify key data and fillout the given system schema"
@@ -104,95 +101,89 @@ async def process_video(request_body: BaseProcessor):
     inference_task = functools.partial(model_manager.inference, **request_body.model_dump())
     results = await loop.run_in_executor(executor, inference_task)
     
-        
-    if isinstance(results, list) and (len(results) > 0):
 
-        for result in results:
-            print(result)
+    for analysis_data in results:
+        analysis_ids = []
 
-            analysis_data = json.loads(result) if result.strip().startswith('{') else {
-                'Frame description': results[0],
-                'License plates': [],
-                'Identification documents': [],
-                'Scene sentiment': {},
-                'People nearby': [],
-                'Risk analysis': {},
-            }
         # Store in database
         db_helper = Db_helper()
         analysis_id = db_helper.insert_analysis(analysis_data, source_path=request_body.source_path)
 
-    
-    if analysis_id:
-        analysis_data['id'] = analysis_id
+        if analysis_id:
+            # analysis_data['id'] = analysis_id
+            analysis_ids.append(analysis_id)
         
     return {
         "status": "success",
-        "analysis_id": analysis_id,
-        "results": analysis_data,
+        "analysis_ids": analysis_ids,
+        "results": results,
     }
 
 # document to text in the database, and the audio to text, 
 
 class Db_helper:
     def __init__(self):
-        self.db_config = DB_CONFIG
+        self.db_config = DB_CONFIG # Dylan -> Hook up Db
         self.conn = None
         self.cursor = None
 
     def insert_analysis(self, analysis_data, source_path=None):
         try:
-            self.conn = psycopg2.connect(**self.db_config)
+            self.conn = psycopg2.connect(**self.db_config) # Dylan -> Hook up Db
             self.cursor = self.conn.cursor()
             
             # Extract data from analysis_data
-            frame_description = [analysis_data.get('Frame description', '')]
+            frame_description = analysis_data.get('Frame description', '')
+            objects_detected = analysis_data.get('Objects dectected', [])
+            objects_detected = ", ".join(objects_detected)
+
             license_plates = analysis_data.get('License plates', [])
-            scene_sentiment = [analysis_data.get('Scene sentiment', {}).get('assessment', '')]
-            sentiment_justification = [analysis_data.get('Scene sentiment', {}).get('justification', '')]
-            people_nearby = json.dumps(analysis_data.get('People nearby', []))
-            risk_analysis = json.dumps(analysis_data.get('Risk analysis', {}))
+            license_plates = ", ".join(license_plates)
+
+            scene_sentiment = analysis_data.get('Scene sentiment', '')
+            risk_analysis = analysis_data.get('Risk analysis', '')
             
             insert_sql = """
-            INSERT INTO visual_analysis 
-            (frame_description, license_plates, scene_sentiment, 
-            sentiment_justification, people_nearby, risk_analysis, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO visual_analysis
+            (frame_description, objects_detected, license_plates, scene_sentiment, 
+            risk_analysis, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id;
             """
             
             values = (
                 frame_description,
-                license_plates,
+                objects_detected,
                 scene_sentiment,
-                sentiment_justification,
-                people_nearby,
+                license_plates,
                 risk_analysis,
                 datetime.now()
             )
+            print(frame_description, objects_detected, license_plates, scene_sentiment, 
+            risk_analysis, datetime.now())
             
             self.cursor.execute(insert_sql, values)
             analysis_id = self.cursor.fetchone()[0]
             
             # Store ID documents in messages table
-            if source_path and 'Identification documents' in analysis_data:
-                message_sql = """
-                INSERT INTO analysis_messages
-                (analysis_id, role, content, created_at)
-                VALUES (%s, %s, %s, %s);
-                """
+            # if source_path and 'Identification documents' in analysis_data:
+            #     message_sql = """
+            #     INSERT INTO analysis_messages
+            #     (analysis_id, role, content, created_at)
+            #     VALUES (%s, %s, %s, %s);
+            #     """
                 
-                content = json.dumps({
-                    "source_path": source_path,
-                    "id_documents": analysis_data.get('Identification documents', [])
-                })
+            #     content = json.dumps({
+            #         "source_path": source_path,
+            #         "id_documents": analysis_data.get('Identification documents', [])
+            #     })
                 
-                self.cursor.execute(message_sql, (
-                    analysis_id,
-                    'system',
-                    content,
-                    datetime.now()
-                ))
+            #     self.cursor.execute(message_sql, (
+            #         analysis_id,
+            #         'system',
+            #         content,
+            #         datetime.now()
+            #     ))
             
             self.conn.commit()
             return analysis_id
@@ -312,11 +303,11 @@ class Qwen2_VQA:
                     "role": "system",
                     "content": """You are an expert visual analysis system.
                     Analyze the video and structure a concise JSON response structured as follows.
-                    Heading 1: Frame description(A concise description of all activity).
-                    Heading 2: Objects dectected(A list of objects identified).
-                    Heading 3: License plates(A list of car license plates and the car make and year).
-                    Heading 4: Scene sentiment(Either 'neutral', 'dangerous' or 'unknown').
-                    Heading 7: Risk analysis(Any signs of risk, conflict, or abnormal activity).""",
+                    Frame activity: (A concise description of is happening within the video).
+                    Objects dectected: (A list of objects identified).
+                    License plates: (A list of car license plates and the car make and year).
+                    Scene sentiment: (Either 'neutral', 'dangerous' or 'unknown').
+                    Risk analysis: (Any signs of risk, conflict, or abnormal activity).""",
                 },
                 {
                     "role": "user",
