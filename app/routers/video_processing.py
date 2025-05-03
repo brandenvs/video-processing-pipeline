@@ -10,7 +10,7 @@ import asyncio
 from datetime import datetime
 import psycopg2
 
-from database_service import Db_helper
+from app.routers.database_service import Db_helper
 
 from torchvision.transforms import ToPILImage
 from transformers import (
