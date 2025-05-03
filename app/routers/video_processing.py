@@ -97,184 +97,76 @@ def check_memory(device=mm.get_torch_device()):
     return (free_mem_gb, total_mem)
 
 
-@router.post("/process/")
+
+@router.post("/process/") 
 async def process_video(request_body: BaseProcessor):
     loop = asyncio.get_running_loop()
-
     torch.cuda.empty_cache()
     gc.collect()
     check_memory()
 
-# startd here ---------------------------------------------------------------
-
-
     try: 
+
         inference_task = functools.partial(model_manager.inference, **request_body.model_dump())
         generated_data = await loop.run_in_executor(executor, inference_task)
         response = json.loads(generated_data)
 
-        if isinstance(response, list) and len(response) > 0:
-            try:
-                # Try to parse as JSON first
-                try:
-                    analysis_data = json.loads(response[0])
-                except (json.JSONDecodeError, TypeError):
-                    # If not JSON, use text format
-                    analysis_data = {
-                        'Frame description': response[0],
-                        'License plates': [],
-                        'Identification documents': [],
-                        'Scene sentiment': {},
-                        'People nearby': [],
-                        'Risk analysis': {},
-                    }
-            except Exception as e:
-                # Handle potential exceptions, such as IndexError
-                analysis_data = {'error': str(e)}
+        if isinstance(response) and (len(response) > 0):
+            analysis_data = json.loads(response[0]) if response[0].strip().startswith('{') else {
+                'Frame description': response[0],
+
+                'License plates': [],
+
+                'Identification documents': [],
+
+                'Scene sentiment': {},
+
+                'People nearby': [],
+
+                'Risk analysis': {},
+            }
         else:
             analysis_data = response
 
         # Store in database
-        db_helper = HelperFunctionDb()
-        analysis_id = db_helper.store_analysis_results(
-            analysis_data, 
-            source_path=request_body.source_path
-        )
+        db_helper = Db_helper()
+
+        analysis_id = db_helper.insert_analysis(analysis_data, source_path=request_body.source_path)
         
         if analysis_id:
             analysis_data['id'] = analysis_id
             
-        processing_time = time.time() - start_time
         return {
             "status": "success",
             "analysis_id": analysis_id,
             "results": analysis_data,
-            "processing_time": processing_time
         }
-        
+    
     except Exception as e:
         logging.error(f"Error processing video: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing video: {str(e)}")   
+        raise HTTPException(status_code=500, detail=f"Error processing video: {str(e)}")
 
-# end here --------------------------------------------------------------------------
-
-# start here ----------------------------------------------------------------------
-
-class HelperFunctionDb:
+# document to text in the database, and the audio to text, 
+    
+class Db_helper:
     def __init__(self):
         self.db_config = DB_CONFIG
         self.conn = None
         self.cursor = None
 
-    def connect(self):
-        """Establish a database connection"""
-        import psycopg2
+    def insert_analysis(self, analysis_data, source_path=None):
         try:
             self.conn = psycopg2.connect(**self.db_config)
             self.cursor = self.conn.cursor()
-            return True
-        except Exception as e:
-            print(f"Connection error: {e}")
-            return False
-
-    def close(self):
-        """Close database connection properly"""
-        if self.cursor:
-            self.cursor.close()
-        if self.conn and not self.conn.closed:
-            self.conn.close()
-
-    def format_with_timestamp(self, data, current_time):
-        """Format data items with timestamps if they don't have one"""
-        from datetime import datetime
-        
-        if current_time is None:
-            current_time = datetime.now().isoformat()
             
-        if isinstance(data, dict):
-            if 'timestamp' not in data:
-                data['timestamp'] = current_time
-            return data
-        else:
-            return {
-                'value': str(data),
-                'timestamp': current_time
-            }
-
-    def store_analysis_results(self, analysis_data, source_path=None):
-        current_time = datetime.now().isoformat()
-        
-        try:
-            if not self.connect():
-                return None
-                
-            # Format frame descriptions
-            frame_desc = analysis_data.get('Frame description', '')
-            if isinstance(frame_desc, str):
-                frame_descriptions = [{
-                    'description': frame_desc,
-                    'timestamp': current_time
-                }]
-            elif isinstance(frame_desc, list):
-                frame_descriptions = [self.format_with_timestamp(desc, current_time) for desc in frame_desc]
-            else:
-                frame_descriptions = []
-                
-            # Format license plates
-            license_plates = []
-            for plate in analysis_data.get('License plates', []):
-                if plate:
-                    license_plates.append(self.format_with_timestamp(plate, current_time))
-                    
-            # Format identification documents
-            id_documents = []
-            for doc in analysis_data.get('Identification documents', []):
-                if doc:
-                    id_documents.append(self.format_with_timestamp(doc, current_time))
-                    
-            # Format scene sentiment
-            sentiment = analysis_data.get('Scene sentiment', {})
-            if isinstance(sentiment, dict):
-                sentiment_data = {
-                    'assessment': sentiment.get('assessment', ''),
-                    'justification': sentiment.get('justification', ''),
-                    'timestamp': current_time
-                }
-            elif isinstance(sentiment, str):
-                sentiment_data = {
-                    'assessment': sentiment,
-                    'justification': '',
-                    'timestamp': current_time
-                }
-            else:
-                sentiment_data = {
-                    'assessment': '',
-                    'justification': '',
-                    'timestamp': current_time
-                }
-                
-            # Format people nearby
-            people_data = []
-            for person in analysis_data.get('People nearby', []):
-                if person:
-                    people_data.append(self.format_with_timestamp(person, current_time))
-                    
-            # Format risk analysis
-            risk = analysis_data.get('Risk analysis', {})
-            if isinstance(risk, dict):
-                risk_data = {
-                    'risks': risk.get('risks', []),
-                    'severity': risk.get('severity', 'low'),
-                    'timestamp': current_time
-                }
-            else:
-                risk_data = {
-                    'risks': [],
-                    'severity': 'low',
-                    'timestamp': current_time
-                }
-                
-            # Insert formatted data into database
+            # Extract data from analysis_data
+            frame_description = [analysis_data.get('Frame description', '')]
+            license_plates = analysis_data.get('License plates', [])
+            scene_sentiment = [analysis_data.get('Scene sentiment', {}).get('assessment', '')]
+            sentiment_justification = [analysis_data.get('Scene sentiment', {}).get('justification', '')]
+            people_nearby = json.dumps(analysis_data.get('People nearby', []))
+            risk_analysis = json.dumps(analysis_data.get('Risk analysis', {}))
+            
             insert_sql = """
             INSERT INTO visual_analysis 
             (frame_description, license_plates, scene_sentiment, 
@@ -283,25 +175,21 @@ class HelperFunctionDb:
             RETURNING id;
             """
             
-            # Extract sentiment values
-            sentiment_value = sentiment_data.get('assessment', '')
-            sentiment_justify = sentiment_data.get('justification', '')
-            
             values = (
-                [json.dumps(fd) for fd in frame_descriptions],  # Convert dicts to JSON strings in array
-                [json.dumps(lp) for lp in license_plates],      # Convert dicts to JSON strings in array
-                [sentiment_value],                              # Text array
-                [sentiment_justify],                            # Text array
-                json.dumps(people_data),                        # JSONB
-                json.dumps(risk_data),                          # JSONB
+                frame_description,
+                license_plates,
+                scene_sentiment,
+                sentiment_justification,
+                people_nearby,
+                risk_analysis,
                 datetime.now()
             )
             
             self.cursor.execute(insert_sql, values)
             analysis_id = self.cursor.fetchone()[0]
             
-            # Store source path in analysis_messages
-            if source_path:
+            # Store ID documents in messages table
+            if source_path and 'Identification documents' in analysis_data:
                 message_sql = """
                 INSERT INTO analysis_messages
                 (analysis_id, role, content, created_at)
@@ -310,7 +198,7 @@ class HelperFunctionDb:
                 
                 content = json.dumps({
                     "source_path": source_path,
-                    "id_documents": id_documents
+                    "id_documents": analysis_data.get('Identification documents', [])
                 })
                 
                 self.cursor.execute(message_sql, (
@@ -324,85 +212,17 @@ class HelperFunctionDb:
             return analysis_id
             
         except Exception as e:
+            print(f"Database error: {e}")
             if self.conn:
                 self.conn.rollback()
-            print(f"Database error: {e}")
             return None
+            
         finally:
-            self.close()
-            
-    def get_analysis_by_id(self, analysis_id):
-        """
-        Retrieve analysis results by ID
-        
-        Args:
-            analysis_id (int): The analysis ID
-            
-        Returns:
-            dict: The analysis data or None if not found
-        """
-        import json
-        
-        try:
-            if not self.connect():
-                return None
-                
-            sql = """
-            SELECT id, frame_description, license_plates, scene_sentiment, 
-                   sentiment_justification, people_nearby, risk_analysis, created_at
-            FROM visual_analysis
-            WHERE id = %s
-            """
-            
-            self.cursor.execute(sql, (analysis_id,))
-            row = self.cursor.fetchone()
-            
-            if not row:
-                return None
-                
-            # Fetch any ID documents from analysis_messages
-            id_docs_sql = """
-            SELECT content FROM analysis_messages
-            WHERE analysis_id = %s AND role = 'system'
-            """
-            
-            self.cursor.execute(id_docs_sql, (analysis_id,))
-            message_row = self.cursor.fetchone()
-            
-            id_documents = []
-            if message_row:
-                message_content = json.loads(message_row[0])
-                id_documents = message_content.get('id_documents', [])
-            
-            # Convert JSON strings in arrays back to objects
-            frame_desc = [json.loads(fd) for fd in row[1]] if row[1] else []
-            license_plates = [json.loads(lp) for lp in row[2]] if row[2] else []
-            
-            # Parse JSONB fields
-            people_nearby = json.loads(row[5]) if row[5] else []
-            risk_analysis = json.loads(row[6]) if row[6] else {}
-            
-            return {
-                'id': row[0],
-                'Frame description': [fd.get('description', '') for fd in frame_desc],
-                'License plates': license_plates,
-                'Identification documents': id_documents,
-                'Scene sentiment': {
-                    'assessment': row[3][0] if row[3] and len(row[3]) > 0 else '',
-                    'justification': row[4][0] if row[4] and len(row[4]) > 0 else ''
-                },
-                'People nearby': people_nearby,
-                'Risk analysis': risk_analysis,
-                'created_at': row[7].isoformat() if row[7] else None
-            }
-            
-        except Exception as e:
-            print(f"Database error: {e}")
-            return None
-        finally:
-            self.close()
-
-# end here --------------------------------------------------------------------------
+            # Always close connections
+            if self.cursor:
+                self.cursor.close()
+            if self.conn and not self.conn.closed:
+                self.conn.close()
 
 
 class Qwen2_VQA:
