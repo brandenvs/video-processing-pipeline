@@ -3,6 +3,7 @@ from app.routers import audio_processing
 from app.routers import model_management
 from app.routers import cli_args
 from app.routers import options
+from app.routers import database_service
 
 
 ROUTES = {
@@ -10,5 +11,6 @@ ROUTES = {
     'AudioProcessing': audio_processing,
     'ModelManagement': model_management,
     'CLIArgs': cli_args,
-    'Options': options
+    'Options': options,
+    'DatabaseService': database_service
 }
