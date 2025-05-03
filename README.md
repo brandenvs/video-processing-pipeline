@@ -4,7 +4,7 @@
 
 ### Document pipeline
 
-- [ ] Integrate technical document processing within the pipeline (*unknown)
+- [ ] Integrate technical document processing within the pipeline ([Qwen3-1.7B-GGUF](https://huggingface.co/unsloth/Qwen3-1.7B-GGUF))
   - [ ] Database integration(use database_service.py)
 
 ### Audio pipeline
