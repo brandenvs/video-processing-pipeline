@@ -2,14 +2,15 @@ from datetime import datetime
 import os
 import psycopg2
 from pydantic import Json
+from app.routers.db_functions import DB_CONFIG, connect_to_db # have this here 
 
-DB_CONFIG = {
-    "host": os.getenv("POSTGRES_HOST", "localhost"),
-    "database": os.getenv("POSTGRES_DB", "stadprin"),
-    "user": os.getenv("POSTGRES_USER", "postgres"),
-    "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
-    "port": os.getenv("POSTGRES_PORT", "5432")
-}
+# DB_CONFIG = {
+#     "host": os.getenv("POSTGRES_HOST", "localhost"),
+#     "database": os.getenv("POSTGRES_DB", "stadprin"),
+#     "user": os.getenv("POSTGRES_USER", "postgres"),
+#     "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
+#     "port": os.getenv("POSTGRES_PORT", "5432")
+# }
 
 def processed_video(result, processor_type):
     conn = psycopg2.connect(**DB_CONFIG)
@@ -18,11 +19,11 @@ def processed_video(result, processor_type):
     # Generate a unique ID for this request
     request_id = f"{processor_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
-    # SQL for inserting the result
+    # SQL for inserting the result 
     sql = """
     INSERT INTO processing_results 
     (processor_type, model, result_json, processing_time, created_at)
-    VALUES (%s, %s, %s, %s, %s, %s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s) 
     RETURNING id;
     """
     
