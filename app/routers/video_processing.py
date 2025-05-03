@@ -4,21 +4,16 @@ from pathlib import Path
 from typing import Optional
 from pydantic import BaseModel
 import torch
-import numpy as np
 import gc
 import asyncio
-from datetime import datetime
-import psycopg2
 
 from app.routers.database_service import Db_helper
 
-from torchvision.transforms import ToPILImage
 from transformers import (
     Qwen2_5_VLForConditionalGeneration,
     AutoProcessor,
     BitsAndBytesConfig,
 )
-from PIL import Image
 from qwen_vl_utils import process_vision_info
 
 from app.routers import model_management as mm

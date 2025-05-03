@@ -1,16 +1,11 @@
-import os
-import time
-import logging
 from fastapi.concurrency import asynccontextmanager
 import psycopg2
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI
 
 from pydantic import BaseModel
-from typing import Optional, Dict, Any, List
+from typing import Optional
 
-from psycopg2.extras import Json
-from datetime import datetime
 from app.routers import video_processing
 
 
