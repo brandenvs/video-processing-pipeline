@@ -28,7 +28,7 @@ def connect_to_db():
 
 class Db_helper:
     def __init__(self):
-        self.db_config = DB_CONFIG  # Dylan -> Hook up Db
+        self.db_config = DB_CONFIG
         self.conn = None
         self.cursor = None
 

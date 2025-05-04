@@ -69,7 +69,7 @@ def check_memory(device=mm.get_torch_device()):
 
 
 @router.post("/process/")
-async def process_video(request_body: BaseProcessor):
+async def process_video(request_body: BaseProcessor):  
     loop = asyncio.get_running_loop()
     torch.cuda.empty_cache()
     gc.collect()
