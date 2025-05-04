@@ -34,24 +34,24 @@ class Db_helper:
 
     def video_analysis(self, analysis_data, source_path=None):
         try:
-            self.conn = psycopg2.connect(**self.db_config)  # Dylan -> Hook up Db
+            self.conn = psycopg2.connect(**self.db_config)
             self.cursor = self.conn.cursor()
 
             # Extract data from analysis_data
             frame_description = analysis_data.get("Frame description", "")
-            objects_detected = analysis_data.get("Objects dectected", [])
+            objects_detected = analysis_data.get("Objects detected", [])
             objects_detected = ", ".join(objects_detected)
 
-            license_plates = analysis_data.get("License plates", [])
-            license_plates = ", ".join(license_plates)
+            cars_detected = analysis_data.get("License plates", [])
+            people_detected = analysis_data.get("People detected", [])
 
             scene_sentiment = analysis_data.get("Scene sentiment", "")
-            risk_analysis = analysis_data.get("Risk analysis", "")
+            id_cards_detected = analysis_data.get("ID cards detected", [])
 
             insert_sql = """
             INSERT INTO visual_analysis
-            (frame_description, objects_detected, license_plates, scene_sentiment, 
-            risk_analysis, created_at)
+            (frame_activity, objects_detected, cars_detected, people_detected, 
+            scene_sentiment, id_cards_detected, batch_number, source_path, created_at)
             VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id;
             """
@@ -59,19 +59,13 @@ class Db_helper:
             values = (
                 frame_description,
                 objects_detected,
+                cars_detected,
+                people_detected,
                 scene_sentiment,
-                license_plates,
-                risk_analysis,
+                id_cards_detected,
                 datetime.now(),
             )
-            print(
-                frame_description,
-                objects_detected,
-                license_plates,
-                scene_sentiment,
-                risk_analysis,
-                datetime.now(),
-            )
+            print(values)
 
             self.cursor.execute(insert_sql, values)
             analysis_id = self.cursor.fetchone()[0]

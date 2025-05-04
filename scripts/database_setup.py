@@ -38,13 +38,13 @@ cursor.execute(
         id SERIAL PRIMARY KEY,
         frame_activity TEXT,
         objects_detected TEXT,
-        cars_detected TEXT,
-        people_detected TEXT,
+        cars_detected JSONB,
+        people_detected JSONB,
         scene_sentiment TEXT,
-        id_cards_detected TEXT,
+        id_cards_detected JSONB,
         batch_number TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        source_path TEXT
+        source_path TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
 """
 )
