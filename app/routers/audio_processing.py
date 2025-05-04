@@ -4,6 +4,9 @@ import re
 import whisper
 from transformers import pipeline
 
+# Set environment variables to disable CUDA
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["TRANSFORMERS_OFFLINE"] = "1"  # Prefer offline models when available
 
 def ensure_model_directory():
     """
@@ -21,16 +24,17 @@ def load_pipeline(task, model_name):
     """
     Loads a pipeline, first checking if it exists locally.
     If not, downloads and saves it locally for future use.
+    Uses CPU only.
     """
     model_path = get_model_path(model_name)
     
     if os.path.exists(model_path):
         print(f"Loading {task} model from local directory: {model_path}")
-        return pipeline(task, model=model_path)
+        return pipeline(task, model=model_path, device=-1)  # device=-1 forces CPU
     else:
         print(f"Downloading {task} model '{model_name}' and saving locally")
         ensure_model_directory()
-        pipe = pipeline(task, model=model_name)
+        pipe = pipeline(task, model=model_name, device=-1)  # device=-1 forces CPU
         pipe.save_pretrained(model_path)
         return pipe
 

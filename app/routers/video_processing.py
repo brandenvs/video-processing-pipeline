@@ -10,6 +10,11 @@ import cv2
 import asyncio
 import logging
 
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Disable CUDA
+import torch
+torch.set_default_device('cpu')  # Use CPU
+
 from torchvision.transforms import ToPILImage
 from transformers import (
     Qwen2_5_VLForConditionalGeneration,
