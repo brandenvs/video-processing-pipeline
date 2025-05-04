@@ -8,42 +8,46 @@ DB_CONFIG = {
     "database": os.getenv("POSTGRES_DB", "stadprin"),
     "user": os.getenv("POSTGRES_USER", "postgres"),
     "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
-    "port": os.getenv("POSTGRES_PORT", "5432")
+    "port": os.getenv("POSTGRES_PORT", "5432"),
 }
+
 
 # Connect to "PostgreSQL" database
 def connect_to_db():
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
-        print(f"Database connection established to {DB_CONFIG['database']} at {DB_CONFIG['host']}")
+        print(
+            f"Database connection established to {DB_CONFIG['database']} at {DB_CONFIG['host']}"
+        )
         return conn, cursor
     except Exception as e:
         print(f"Failed to connect to database: {e}")
         return None, None
 
+
 class Db_helper:
     def __init__(self):
-        self.db_config = DB_CONFIG # Dylan -> Hook up Db
+        self.db_config = DB_CONFIG  # Dylan -> Hook up Db
         self.conn = None
         self.cursor = None
 
     def video_analysis(self, analysis_data, source_path=None):
         try:
-            self.conn = psycopg2.connect(**self.db_config) # Dylan -> Hook up Db
+            self.conn = psycopg2.connect(**self.db_config)  # Dylan -> Hook up Db
             self.cursor = self.conn.cursor()
-            
+
             # Extract data from analysis_data
-            frame_description = analysis_data.get('Frame description', '')
-            objects_detected = analysis_data.get('Objects dectected', [])
+            frame_description = analysis_data.get("Frame description", "")
+            objects_detected = analysis_data.get("Objects dectected", [])
             objects_detected = ", ".join(objects_detected)
 
-            license_plates = analysis_data.get('License plates', [])
+            license_plates = analysis_data.get("License plates", [])
             license_plates = ", ".join(license_plates)
 
-            scene_sentiment = analysis_data.get('Scene sentiment', '')
-            risk_analysis = analysis_data.get('Risk analysis', '')
-            
+            scene_sentiment = analysis_data.get("Scene sentiment", "")
+            risk_analysis = analysis_data.get("Risk analysis", "")
+
             insert_sql = """
             INSERT INTO visual_analysis
             (frame_description, objects_detected, license_plates, scene_sentiment, 
@@ -51,30 +55,36 @@ class Db_helper:
             VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id;
             """
-            
+
             values = (
                 frame_description,
                 objects_detected,
                 scene_sentiment,
                 license_plates,
                 risk_analysis,
-                datetime.now()
+                datetime.now(),
             )
-            print(frame_description, objects_detected, license_plates, scene_sentiment, 
-            risk_analysis, datetime.now())
-            
+            print(
+                frame_description,
+                objects_detected,
+                license_plates,
+                scene_sentiment,
+                risk_analysis,
+                datetime.now(),
+            )
+
             self.cursor.execute(insert_sql, values)
             analysis_id = self.cursor.fetchone()[0]
 
             self.conn.commit()
             return analysis_id
-            
+
         except Exception as e:
             print(f"Database error: {e}")
             if self.conn:
                 self.conn.rollback()
             return None
-            
+
         finally:
             # Always close connections
             if self.cursor:
@@ -85,9 +95,9 @@ class Db_helper:
     def audio_analysis(self, analysis_data, source_path=None):
         try:
             pass
-            # self.conn = psycopg2.connect(**self.db_config) 
+            # self.conn = psycopg2.connect(**self.db_config)
             # self.cursor = self.conn.cursor()
-            
+
             # # Extract data from analysis_data
             # frame_description = analysis_data.get('Frame description', '')
             # objects_detected = analysis_data.get('Objects dectected', [])
@@ -98,15 +108,15 @@ class Db_helper:
 
             # scene_sentiment = analysis_data.get('Scene sentiment', '')
             # risk_analysis = analysis_data.get('Risk analysis', '')
-            
+
             # insert_sql = """
             # INSERT INTO visual_analysis
-            # (frame_description, objects_detected, license_plates, scene_sentiment, 
+            # (frame_description, objects_detected, license_plates, scene_sentiment,
             # risk_analysis, created_at)
             # VALUES (%s, %s, %s, %s, %s, %s)
             # RETURNING id;
             # """
-            
+
             # values = (
             #     frame_description,
             #     objects_detected,
@@ -115,21 +125,21 @@ class Db_helper:
             #     risk_analysis,
             #     datetime.now()
             # )
-            # print(frame_description, objects_detected, license_plates, scene_sentiment, 
+            # print(frame_description, objects_detected, license_plates, scene_sentiment,
             # risk_analysis, datetime.now())
-            
+
             # self.cursor.execute(insert_sql, values)
             # analysis_id = self.cursor.fetchone()[0]
 
             # self.conn.commit()
             # return analysis_id
-            
+
         except Exception as e:
             print(f"Database error: {e}")
             if self.conn:
                 self.conn.rollback()
             return None
-            
+
         finally:
             # Always close connections
             if self.cursor:
