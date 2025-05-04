@@ -3,6 +3,17 @@ import os
 import re
 import whisper
 from transformers import pipeline
+from fastapi import APIRouter, UploadFile, File, BackgroundTasks
+from fastapi.responses import JSONResponse
+from typing import Optional
+import time
+
+# Create router
+router = APIRouter(
+    prefix="/audio",
+    tags=["audio-processing"],
+    responses={404: {"description": "Not found"}},
+)
 
 # Set environment variables to disable CUDA
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -219,3 +230,69 @@ def direct_transcription(audio_file, model_name):
         print("No urgent keywords detected in the transcript.")
         
     return formatted_original, analysis
+
+
+@router.post("/transcribe")
+async def transcribe_endpoint(
+    file: UploadFile = File(...),
+    model_name: str = "base",
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Endpoint to transcribe an audio file
+    """
+    # Create input directory if it doesn't exist
+    input_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "input")
+    os.makedirs(input_dir, exist_ok=True)
+    
+    # Save the uploaded file
+    file_path = os.path.join(input_dir, file.filename)
+    with open(file_path, "wb") as f:
+        f.write(await file.read())
+    
+    # Process in background if requested
+    if background_tasks:
+        background_tasks.add_task(direct_transcription, file_path, model_name)
+        return JSONResponse(content={"message": "Transcription started in background", "file": file.filename})
+    
+    # Process immediately
+    start_time = time.time()
+    transcript, analysis = direct_transcription(file_path, model_name)
+    processing_time = time.time() - start_time
+    
+    return JSONResponse(content={
+        "transcript": transcript,
+        "analysis": {
+            "summary": analysis["summary"],
+            "sentiment": analysis["sentiment"],
+            "tone": {
+                "labels": analysis["tone"]["labels"],
+                "scores": analysis["tone"]["scores"]
+            },
+            "urgent": analysis["urgent"]
+        },
+        "processing_time": processing_time
+    })
+
+@router.post("/extract-audio")
+async def extract_audio_endpoint(
+    file: UploadFile = File(...),
+):
+    """
+    Endpoint to extract audio from a video file
+    """
+    # Create input directory if it doesn't exist
+    input_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "input")
+    os.makedirs(input_dir, exist_ok=True)
+    
+    # Save the uploaded file
+    file_path = os.path.join(input_dir, file.filename)
+    with open(file_path, "wb") as f:
+        f.write(await file.read())
+    
+    # Extract audio
+    try:
+        output_path = extract_audio_for_transcription(file_path)
+        return JSONResponse(content={"message": "Audio extracted successfully", "output_path": output_path})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)

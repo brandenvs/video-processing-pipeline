@@ -59,6 +59,9 @@ def init_database():
         # Create PostgreSQL connection string
         db_url = f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
         
+        # Print connection details for debugging (remove in production)
+        print(f"Connecting to database at {DB_CONFIG['host']}:{DB_CONFIG['port']}")
+        
         # Create engine and tables
         engine = create_engine(db_url)
         Base.metadata.create_all(engine)
@@ -68,7 +71,7 @@ def init_database():
         
         return engine, Session
     except Exception as e:
-        print(f"Database initialization error: {e}")
+        print(f"Database initialization error: {str(e)}")
         return None, None
 
 # Function to store form fields in the database

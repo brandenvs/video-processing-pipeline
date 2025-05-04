@@ -3,11 +3,12 @@ import os
 import psycopg2
 from pydantic import Json
 
+# DB configuration that works with both Docker and local development
 DB_CONFIG = {
     "host": os.getenv("POSTGRES_HOST", "localhost"),
     "database": os.getenv("POSTGRES_DB", "stadprin"),
     "user": os.getenv("POSTGRES_USER", "postgres"),
-    "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
+    "password": os.getenv("POSTGRES_PASSWORD", "posty"),
     "port": os.getenv("POSTGRES_PORT", "5432")
 }
 
@@ -21,7 +22,7 @@ def processed_video(result, processor_type):
     # SQL for inserting the result
     sql = """
     INSERT INTO processing_results 
-    (processor_type, model, result_json, processing_time, created_at)
+    (request_id, processor_type, model, result_json, processing_time, created_at)
     VALUES (%s, %s, %s, %s, %s, %s)
     RETURNING id;
     """
