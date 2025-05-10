@@ -21,5 +21,14 @@
 
 ---
 
-- [ ] RAG on Db vectors.
-- [ ] Build a frontend dashboard.
+- [ ] RAG on Db vectors. (reseaching(2025/05/09) - Dylan )
+
+
+- [ ] Build a frontend dashboard. {
+            
+            - Maybe this could be a browser extension so they work with this via the internet? and we remain an agen ai based solution. 
+            - Dashboard run locally will cause us to add additional systems in place. 
+            
+            }
+            
+- [ ] Set up Connection point, upload point for customer
