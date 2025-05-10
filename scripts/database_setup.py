@@ -48,6 +48,9 @@ cursor.execute(
     )
 """
 )
+
+# Add pgai vectoriser
+
 print("Created visual_analysis")
 cursor.close()
 conn.close()
