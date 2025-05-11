@@ -7,6 +7,7 @@ nodes/
 adp-video-pipeline/nodes
 
 __pycache__/
+venv/
 data/
 local/
 .vscode/
