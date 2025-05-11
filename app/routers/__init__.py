@@ -4,6 +4,7 @@ from app.routers import model_management
 from app.routers import cli_args
 from app.routers import options
 from app.routers import database_service
+from app.routers import document_processing
 
 
 ROUTES = {
@@ -12,5 +13,6 @@ ROUTES = {
     'ModelManagement': model_management,
     'CLIArgs': cli_args,
     'Options': options,
-    'DatabaseService': database_service
+    'DatabaseService': database_service,
+    'DocumentProcessing': document_processing
 }

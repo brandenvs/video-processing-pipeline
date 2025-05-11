@@ -8,7 +8,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from typing import Optional, List
 
 # Import the DB configuration from the original project
-from app.routers.db_functions import DB_CONFIG
+from app.routers.database_service import DB_CONFIG
 import psycopg2
 
 # Create router
@@ -21,7 +21,7 @@ router = APIRouter(
 # Create a base class for our models
 Base = declarative_base()
 
-# Define the FormField model
+# Define the FormField model - this is now just for ORM, not for table creation
 class FormField(Base):
     """Database model for storing form fields and their properties"""
     __tablename__ = 'form_fields'
@@ -37,7 +37,7 @@ class FormField(Base):
     def __repr__(self):
         return f"<FormField(document='{self.document_name}', field='{self.field_name}', value='{self.field_value}')>"
 
-# Define the FormDocument model
+# Define the FormDocument model - this is now just for ORM, not for table creation
 class FormDocument(Base):
     """Database model for storing form documents and their fields"""
     __tablename__ = 'form_documents'
@@ -52,7 +52,7 @@ class FormDocument(Base):
     def __repr__(self):
         return f"<FormDocument(document='{self.document_name}', fields={len(self.fields_json) if self.fields_json else 0})>"
 
-# Function to initialize the database
+# Function to initialize the database - modified to not create tables
 def init_database():
     """Initialize the database connection using the project's DB config"""
     try:
@@ -62,9 +62,8 @@ def init_database():
         # Print connection details for debugging (remove in production)
         print(f"Connecting to database at {DB_CONFIG['host']}:{DB_CONFIG['port']}")
         
-        # Create engine and tables
+        # Create engine but don't create tables - they're created in the updated database_setup.py @branden
         engine = create_engine(db_url)
-        Base.metadata.create_all(engine)
         
         # Create session factory
         Session = sessionmaker(bind=engine)
