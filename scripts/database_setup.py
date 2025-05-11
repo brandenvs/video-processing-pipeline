@@ -1,7 +1,4 @@
 import psycopg2
-from psycopg2 import sql
-from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-
 
 conn = psycopg2.connect(
     dbname="postgres",
@@ -48,6 +45,9 @@ cursor.execute(
     )
 """
 )
+
+# Add pgai vectoriser
+
 print("Created visual_analysis")
 cursor.close()
 conn.close()

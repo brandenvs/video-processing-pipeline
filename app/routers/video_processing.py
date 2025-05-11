@@ -150,19 +150,30 @@ class Qwen2_VQA:
             else torch.bfloat16 if mm.should_use_bf16(self.device) else torch.float32
         )
 
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=self.dtype,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-        )
+        if self.dtype != torch.float16:
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=self.dtype,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+        else:
+            quantization_config = None
+
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_checkpoint,
             torch_dtype=self.dtype,
+            attn_implementation="flash_attention_2",
             device_map=self.device,
-            quantization_config=quantization_config,
+            # quantization_config=quantization_config,
         )
-        self.processor = AutoProcessor.from_pretrained(self.model_checkpoint)
+
+        self.processor = AutoProcessor.from_pretrained(
+            self.model_checkpoint,
+            min_pixels = 256*28*28,
+            max_pixels = 1280*28*28,
+        )
+
         self._model_loaded = True
 
     def inference(
@@ -192,6 +203,7 @@ class Qwen2_VQA:
         data_dir = Path("./video")
 
         if not self._model_loaded:
+            print('>>> Loading model into memory')
             self.load_model()
 
         sequence_no = 0
@@ -219,6 +231,7 @@ class Qwen2_VQA:
                 },
             ]
 
+            print('>>> Preparation for inference')
             # Preparation for inference
             system_prompts = self.processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
@@ -227,25 +240,27 @@ class Qwen2_VQA:
 
             check_memory(self.device)
 
+            print('Preparing inputs ....')
             inputs = self.processor(
                 text=system_prompts,
                 videos=video_inputs,
                 images=image_inputs,
                 padding=True,
                 return_tensors="pt",
-            ).to(self.device)
-
-            output_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
-            generated_ids = [
-                output_ids[len(input_ids) :]
-                for input_ids, output_ids in zip(inputs.input_ids, output_ids)
-            ]
-            generated_response = self.processor.batch_decode(
-                generated_ids,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=True,
             )
+            inputs =  inputs.to(self.device)
 
+            print('>>> Inference: Generation of the output')
+            generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+            generated_ids_trimmed = [
+                out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            ]
+
+            generated_response = self.processor.batch_decode(
+                generated_ids_trimmed,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
             sequence_no += 1
             result = self.process_generated_response(generated_response[0], sequence_no)
             results.append(result)
@@ -253,3 +268,4 @@ class Qwen2_VQA:
 
 
 model_manager = Qwen2_VQA()
+

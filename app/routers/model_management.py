@@ -26,6 +26,13 @@ import platform
 import weakref
 import gc
 
+
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Disable CUDA
+import torch
+torch.set_default_device('cpu')  # Use CPU
+
+
 class VRAMState(Enum):
     DISABLED = 0    #No vram present: no need to move models to vram
     NO_VRAM = 1     #Very low vram: enable all the options to save vram
@@ -151,66 +158,105 @@ def is_mlu():
         return True
     return False
 
+# def get_torch_device():
+#     global directml_enabled
+#     global cpu_state
+#     if directml_enabled:
+#         global directml_device
+#         return directml_device
+#     if cpu_state == CPUState.MPS:
+#         return torch.device("mps")
+#     if cpu_state == CPUState.CPU:
+#         return torch.device("cpu")
+#     else:
+#         if is_intel_xpu():
+#             return torch.device("xpu", torch.xpu.current_device())
+#         elif is_ascend_npu():
+#             return torch.device("npu", torch.npu.current_device())
+#         elif is_mlu():
+#             return torch.device("mlu", torch.mlu.current_device())
+#         else:
+#             return torch.device(torch.cuda.current_device())
+
 def get_torch_device():
-    global directml_enabled
-    global cpu_state
-    if directml_enabled:
-        global directml_device
-        return directml_device
-    if cpu_state == CPUState.MPS:
-        return torch.device("mps")
-    if cpu_state == CPUState.CPU:
-        return torch.device("cpu")
-    else:
-        if is_intel_xpu():
-            return torch.device("xpu", torch.xpu.current_device())
-        elif is_ascend_npu():
-            return torch.device("npu", torch.npu.current_device())
-        elif is_mlu():
-            return torch.device("mlu", torch.mlu.current_device())
-        else:
-            return torch.device(torch.cuda.current_device())
+    """
+    Get the torch device to use (CPU or CUDA)
+    Modified to always return CPU device
+    """
+    # Always use CPU regardless of CUDA availability
+    return torch.device("cpu")
 
-def get_total_memory(dev=None, torch_total_too=False):
-    global directml_enabled
-    if dev is None:
-        dev = get_torch_device()
+# def get_total_memory(dev=None, torch_total_too=False):
+#     global directml_enabled
+#     if dev is None:
+#         dev = get_torch_device()
 
-    if hasattr(dev, 'type') and (dev.type == 'cpu' or dev.type == 'mps'):
-        mem_total = psutil.virtual_memory().total
-        mem_total_torch = mem_total
-    else:
-        if directml_enabled:
-            mem_total = 1024 * 1024 * 1024 #TODO
-            mem_total_torch = mem_total
-        elif is_intel_xpu():
-            stats = torch.xpu.memory_stats(dev)
-            mem_reserved = stats['reserved_bytes.all.current']
-            mem_total_torch = mem_reserved
-            mem_total = torch.xpu.get_device_properties(dev).total_memory
-        elif is_ascend_npu():
-            stats = torch.npu.memory_stats(dev)
-            mem_reserved = stats['reserved_bytes.all.current']
-            _, mem_total_npu = torch.npu.mem_get_info(dev)
-            mem_total_torch = mem_reserved
-            mem_total = mem_total_npu
-        elif is_mlu():
-            stats = torch.mlu.memory_stats(dev)
-            mem_reserved = stats['reserved_bytes.all.current']
-            _, mem_total_mlu = torch.mlu.mem_get_info(dev)
-            mem_total_torch = mem_reserved
-            mem_total = mem_total_mlu
-        else:
-            stats = torch.cuda.memory_stats(dev)
-            mem_reserved = stats['reserved_bytes.all.current']
-            _, mem_total_cuda = torch.cuda.mem_get_info(dev)
-            mem_total_torch = mem_reserved
-            mem_total = mem_total_cuda
+#     if hasattr(dev, 'type') and (dev.type == 'cpu' or dev.type == 'mps'):
+#         mem_total = psutil.virtual_memory().total
+#         mem_total_torch = mem_total
+#     else:
+#         if directml_enabled:
+#             mem_total = 1024 * 1024 * 1024 #TODO
+#             mem_total_torch = mem_total
+#         elif is_intel_xpu():
+#             stats = torch.xpu.memory_stats(dev)
+#             mem_reserved = stats['reserved_bytes.all.current']
+#             mem_total_torch = mem_reserved
+#             mem_total = torch.xpu.get_device_properties(dev).total_memory
+#         elif is_ascend_npu():
+#             stats = torch.npu.memory_stats(dev)
+#             mem_reserved = stats['reserved_bytes.all.current']
+#             _, mem_total_npu = torch.npu.mem_get_info(dev)
+#             mem_total_torch = mem_reserved
+#             mem_total = mem_total_npu
+#         elif is_mlu():
+#             stats = torch.mlu.memory_stats(dev)
+#             mem_reserved = stats['reserved_bytes.all.current']
+#             _, mem_total_mlu = torch.mlu.mem_get_info(dev)
+#             mem_total_torch = mem_reserved
+#             mem_total = mem_total_mlu
+#         else:
+#             stats = torch.cuda.memory_stats(dev)
+#             mem_reserved = stats['reserved_bytes.all.current']
+#             _, mem_total_cuda = torch.cuda.mem_get_info(dev)
+#             mem_total_torch = mem_reserved
+#             mem_total = mem_total_cuda
 
-    if torch_total_too:
-        return (mem_total, mem_total_torch)
+#     if torch_total_too:
+#         return (mem_total, mem_total_torch)
+#     else:
+#         return mem_total
+
+def get_torch_device():
+    """
+    Get the torch device to use (CPU or CUDA)
+    Modified to always return CPU device
+    """
+    # Always use CPU regardless of CUDA availability
+    return torch.device("cpu")
+
+def get_total_memory(device):
+    """
+    Get the total memory available on the device
+    Modified to handle CPU-only setup
+    """
+    if device.type == "cuda" and torch.cuda.is_available():
+        return torch.cuda.get_device_properties(device).total_memory
     else:
-        return mem_total
+        # For CPU, return a reasonable default value (8GB)
+        return 8 * 1024 * 1024 * 1024  # 8GB in bytes
+
+
+def get_available_memory(device):
+    """
+    Get the available memory on the device
+    Modified to handle CPU-only setup
+    """
+    if device.type == "cuda" and torch.cuda.is_available():
+        return torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+    else:
+        # For CPU, return a reasonable default value (4GB)
+        return 4 * 1024 * 1024 * 1024
 
 def mac_version():
     try:
@@ -218,9 +264,13 @@ def mac_version():
     except:
         return None
 
+# total_vram = get_total_memory(get_torch_device()) / (1024 * 1024)
+# total_ram = psutil.virtual_memory().total / (1024 * 1024)
+
 total_vram = get_total_memory(get_torch_device()) / (1024 * 1024)
-total_ram = psutil.virtual_memory().total / (1024 * 1024)
-logging.info("Total VRAM {:0.0f} MB, total RAM {:0.0f} MB".format(total_vram, total_ram))
+available_vram = get_available_memory(get_torch_device()) / (1024 * 1024)
+
+logging.info("Total VRAM {:0.0f} MB, total RAM {:0.0f} MB".format(total_vram, available_vram))
 
 try:
     logging.info("pytorch version: {}".format(torch_version))
