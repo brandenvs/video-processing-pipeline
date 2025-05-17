@@ -1,7 +1,9 @@
 import json
 import os
 from pathlib import Path
+import time
 from typing import Optional
+import concurrent
 from pydantic import BaseModel
 import torch
 import gc
@@ -47,7 +49,7 @@ router = APIRouter(
     tags=["process"],
     responses={404: {"description": "Not found"}},
 )
-
+2
 executor = ThreadPoolExecutor(max_workers=4)
 
 
@@ -200,39 +202,74 @@ class Qwen2_VQA:
 
         self._model_loaded = True
 
+    def process_batch(self, start, end, segment, i):
+        video = VideoFileClip(segment)
+        segment_path = os.path.join('segments', f"batch_{i+1}.mp4")
+
+        segment = video.subclipped(start, end)
+        segment = segment.with_fps(5)
+        segment.write_videofile(
+            segment_path,
+            codec="libx264",
+            audio_codec="aac",
+            temp_audiofile=f"audio/temp-audio-{i}.m4a",
+            remove_temp=True, # REMOVE
+            logger=None
+        )
+
+        segment.close()
+        video.close()
+        return segment_path
+
     def inference(
         self,
         system_prompt,
         max_new_tokens,
         source_path=None,
     ):
-        video = VideoFileClip(source_path)
-
         results = []
-
-        video_duration = video.duration
-        batch_duration = 2
-
-        # Video batching
         batches = []
-        for start_time in range(0, int(video_duration), batch_duration):
-            end_time = min(start_time + batch_duration, video_duration)
-            batch = video.subclipped(start_time, end_time)
-            batches.append(batch)
+        segments = []
+        batch = 2
 
-        for idx, batch in enumerate(batches):
-            batch_filename = f"video/batch_{idx+1}.mp4"
-            batch.write_videofile(batch_filename, codec="libx264")
+        os.makedirs('segments', exist_ok=True)
 
-        data_dir = Path("./video")
+        start_time = time.time() # timer
+        
+        video = VideoFileClip(source_path)
+        video_duration = video.duration
+        video.close() 
 
+        # MARK: Batching
+        for start in range(0, int(video_duration), batch):
+            end = min(start + batch, video_duration)
+            segments.append((start, end))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            print('>>> Processing segments')
+            video_to_batches = {
+                executor.submit(self.process_batch, 
+                                start, end, source_path, idx):
+                                idx for idx, (start, end) in enumerate(segments)
+            }
+
+        for future in concurrent.futures.as_completed(video_to_batches):
+            batch = future.result()
+            if batch:
+                batches.append(batch)
+
+        elapsed_time = time.time() - start_time # timer logged
+        print(f"Batching completed in {elapsed_time:.2f} seconds")
+
+        # MARK: Inference
         if not self._model_loaded:
             print('>>> Loading model into memory')
             self.load_model()
 
+        batches.sort(key=lambda filename: int(filename.split('_')[-1].split('.')[0]))
+
         sequence_no = 0
-        for filename in os.listdir(data_dir):
-            file_path = os.path.join(data_dir, filename)  # Video file path
+        for batch in batches:
             messages = [
                 {
                     "role": "system",
@@ -249,7 +286,7 @@ class Qwen2_VQA:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "video", "video": file_path},
+                        {"type": "video", "video": batch},
                         {"type": "text", "text": system_prompt},
                     ],
                 },
@@ -290,9 +327,20 @@ class Qwen2_VQA:
                 clean_up_tokenization_spaces=False,
             )
             sequence_no += 1
-            result = self.process_generated_response(generated_response[0], sequence_no)
+            generated_response = self.process_generated_response(generated_response[0], sequence_no)
+
+            finished_in = time.time() - start_time
+            result = {
+                **generated_response,
+                'sequence_no': sequence_no,
+                "finished_in": round(finished_in, 3)
+            }
+            print(json.dumps(result, indent=2))
             results.append(result)
+
+        [os.remove(os.path.join(segments, f)) for f in os.listdir(segments) if os.path.isfile(os.path.join(segments, f))] # cleanup
         return results
+
 
 
 model_manager = Qwen2_VQA()
