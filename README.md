@@ -6,6 +6,7 @@
 
 - [x] Integrate technical document processing within the pipeline ([Qwen3-1.7B-GGUF](https://huggingface.co/unsloth/Qwen3-1.7B-GGUF))
   - [x] Database integration(use database_service.py and add create table to database_setup.py)
+  - [x] Convert JSON fields into a query 
 
 ### Audio pipeline
 
