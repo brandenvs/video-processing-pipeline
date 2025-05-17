@@ -6,14 +6,15 @@ from pydantic import BaseModel
 import torch
 import gc
 import asyncio
-
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from app.routers.database_service import Db_helper
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig
 
-from transformers import (
-    Qwen2_5_VLForConditionalGeneration,
-    AutoProcessor,
-    BitsAndBytesConfig,
-)
+# from transformers import (
+#     Qwen2_5_VLForConditionalGeneration,
+#     AutoProcessor,
+#     BitsAndBytesConfig,
+# )
 from qwen_vl_utils import process_vision_info
 
 from app.routers import model_management as mm
@@ -57,10 +58,10 @@ def cleanup_executor():
 atexit.register(cleanup_executor)
 
 
-def check_memory(device=mm.get_torch_device()):
+def check_memory(device=mm.get_torch_device):
     print("Device Loaded: ", device)
 
-    total_mem = mm.get_total_memory() / (1024 * 1024 * 1024)
+    total_mem = mm.get_total_memory(device) / (1024 * 1024 * 1024)
     print(f"GPU has {total_mem} GBs")
 
     free_mem_gb = mm.get_free_memory(device) / (1024 * 1024 * 1024)
@@ -85,7 +86,7 @@ async def process_video(request_body: BaseProcessor):
 
         # Store in database
         db_helper = Db_helper()
-        analysis_id = db_helper.insert_analysis(
+        analysis_id = db_helper.video_analysis(
             analysis_data, source_path=request_body.source_path
         )
 
@@ -93,6 +94,7 @@ async def process_video(request_body: BaseProcessor):
             # analysis_data['id'] = analysis_id
             analysis_ids.append(analysis_id)
 
+    print(results)
     return {
         "status": "success",
         "analysis_ids": analysis_ids,
@@ -149,6 +151,7 @@ class Qwen2_VQA:
             if mm.should_use_fp16(self.device)
             else torch.bfloat16 if mm.should_use_bf16(self.device) else torch.float32
         )
+        print(f'>>> Selected DType: {self.dtype}')
 
         if self.dtype != torch.float16:
             quantization_config = BitsAndBytesConfig(
@@ -160,12 +163,33 @@ class Qwen2_VQA:
         else:
             quantization_config = None
 
+        # Get architecture details if CUDA is available
+        if torch.cuda.is_available():
+            device_index = torch.cuda.current_device()
+            device_name = torch.cuda.get_device_name(device_index)
+            capability = torch.cuda.get_device_capability(device_index)
+            print(f'>>> CUDA Device: {device_name}')
+            print(f'>>> Compute Capability: {capability[0]}.{capability[1]}')
+
+            # Classify architecture
+            major = capability[0]
+            if major >= 8:
+                print(">>> Architecture: Ampere or newer (FlashAttention-compatible)")
+            elif major == 7:
+                print(">>> Architecture: Turing or Volta (not compatible with FlashAttention)")
+            else:
+                print(">>> Architecture: Older (not compatible)")
+
+        else:
+            print(">>> CUDA not available")
+    
+        print(f'>>> Selected Device: {self.device}')
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_checkpoint,
             torch_dtype=self.dtype,
-            attn_implementation="flash_attention_2",
+            # attn_implementation="flash_attention_2",
             device_map=self.device,
-            # quantization_config=quantization_config,
+            quantization_config=quantization_config,
         )
 
         self.processor = AutoProcessor.from_pretrained(
@@ -251,9 +275,13 @@ class Qwen2_VQA:
             inputs =  inputs.to(self.device)
 
             print('>>> Inference: Generation of the output')
-            generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+            outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+
+            # with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+            #     outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+            # generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
             generated_ids_trimmed = [
-                out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+                out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
             ]
 
             generated_response = self.processor.batch_decode(
