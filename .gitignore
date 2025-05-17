@@ -15,3 +15,8 @@ local/
 check_db.py
 setup_database.py
 test_document.py
+segments/
+video/
+source_data/
+audio/
+

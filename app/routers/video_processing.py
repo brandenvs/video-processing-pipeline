@@ -49,7 +49,7 @@ router = APIRouter(
     tags=["process"],
     responses={404: {"description": "Not found"}},
 )
-2
+
 executor = ThreadPoolExecutor(max_workers=4)
 
 
@@ -338,7 +338,7 @@ class Qwen2_VQA:
             print(json.dumps(result, indent=2))
             results.append(result)
 
-        [os.remove(os.path.join(segments, f)) for f in os.listdir(segments) if os.path.isfile(os.path.join(segments, f))] # cleanup
+        [os.remove(os.path.join('segments', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))] # cleanup
         return results
 
 
