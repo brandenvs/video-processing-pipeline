@@ -33,7 +33,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-app.include_router(video_processing.router)
+# app.include_router(video_processing.router)
 app.include_router(document_processing.router)
 
 
