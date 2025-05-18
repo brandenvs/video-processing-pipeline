@@ -40,7 +40,7 @@ class BaseProcessor(BaseModel):
     )
     max_new_tokens: Optional[int] = 512
     source_path: Optional[str] = None
-
+    document_key: Optional[str] = None
 
 router = APIRouter()
 
@@ -148,6 +148,7 @@ class Qwen2_VQA:
 
             snapshot_download(repo_id=model_id, local_dir=self.model_checkpoint)
 
+        # MARK: Precision
         self.dtype = (
             torch.float16
             if mm.should_use_fp16(self.device)
