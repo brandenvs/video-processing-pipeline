@@ -13,6 +13,6 @@ local/
 .vscode/
 .random_kak_claude_did/
 
-check_db.py
-setup_database.py
-test_document.py
+./check_db.py
+./setup_database.py
+./test_document.py
