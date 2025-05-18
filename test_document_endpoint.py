@@ -10,7 +10,7 @@ if len(sys.argv) > 1:
     pdf_path = sys.argv[1]
 else:
     # Default test PDF - replace with an actual PDF on your system
-    pdf_path = r"C:\Users\liano\OneDrive\Documents\REST-API\adp-video-pipeline\input\patrol_report.pdf"
+    pdf_path = r"C:\Users\liano\OneDrive\Documents\REST-API\adp-video-pipeline\source_data\patrol_report.pdf"
 
 # Check if the file exists
 if not os.path.exists(pdf_path):

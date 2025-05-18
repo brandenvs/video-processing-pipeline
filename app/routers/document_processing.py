@@ -222,7 +222,7 @@ async def process_document_endpoint(
     """Process a document file and extract form fields"""
     # ... existing code ...
     # Create input directory if it doesn't exist
-    input_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "input")
+    input_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "source_data")
     os.makedirs(input_dir, exist_ok=True)
     
     # Save the uploaded file
