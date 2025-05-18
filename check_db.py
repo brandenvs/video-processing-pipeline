@@ -1,5 +1,5 @@
 import psycopg2
-from app.routers.db_functions import DB_CONFIG
+from app.routers.database_service import DB_CONFIG
 
 def check_database_connection():
     """Check if we can connect to the database"""

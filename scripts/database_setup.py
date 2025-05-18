@@ -46,8 +46,45 @@ cursor.execute(
 """
 )
 
-# Add pgai vectoriser
 
-print("Created visual_analysis")
+""" Document Tables Below"""
+
+
+# Create form_fields table
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS form_fields (
+        id SERIAL PRIMARY KEY,
+        document_name TEXT,
+        field_name TEXT,
+        field_value TEXT,
+        field_length INTEGER,
+        field_type TEXT,
+        processed_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+"""
+)
+print("Created form_fields table...")
+
+# Create form_documents table
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS form_documents (
+        id SERIAL PRIMARY KEY,
+        document_name TEXT,
+        document_path TEXT,
+        video_path TEXT,
+        fields_json JSONB,
+        processed_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+"""
+)
+print("Created form_documents table...")
+
+# @Branden - No commit was made after initial creation of tables.
+conn.commit()
+print("Tables created successfully!")
+
+# Add pgai vectorconn.commit()("Created visual_analysis")
 cursor.close()
 conn.close()

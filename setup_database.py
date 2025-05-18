@@ -1,5 +1,6 @@
 import psycopg2
-from app.routers.db_functions import DB_CONFIG
+import json
+from app.routers.database_service import DB_CONFIG
 
 def setup_database():
     """Set up the database with the required tables for document processing"""
@@ -62,6 +63,17 @@ def setup_database():
         )
         """)
         
+        # Create visual_analysis table with a single JSON column for analysis data
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS visual_analysis (
+            id SERIAL PRIMARY KEY,
+            source_path TEXT,
+            analysis_data JSONB,
+            batch_number TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        
         # Create processing_results table if it doesn't exist
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS processing_results (
@@ -77,6 +89,73 @@ def setup_database():
         
         conn.commit()
         print("Tables created successfully!")
+        
+        # Insert demo data into visual_analysis table
+        sample_video_analysis = {
+            "frame_activity": "Police officer inspecting a vehicle during a traffic stop",
+            "objects_detected": "Police car, civilian vehicle, flashlight, ID card, driver's license",
+            "cars_detected": [
+                {
+                    "license_plate": "ABC-123",
+                    "color": "Blue",
+                    "model": "Toyota Corolla"
+                },
+                {
+                    "license_plate": "XYZ-789",
+                    "color": "White",
+                    "model": "Ford Police Interceptor"
+                }
+            ],
+            "people_detected": [
+                {
+                    "estimated_height": "180cm",
+                    "age": "35-45",
+                    "race": "Caucasian",
+                    "emotional_state": "Nervous",
+                    "proximity": "Inside vehicle"
+                },
+                {
+                    "estimated_height": "185cm",
+                    "age": "30-40",
+                    "race": "Caucasian",
+                    "emotional_state": "Authoritative",
+                    "proximity": "Standing by driver window"
+                }
+            ],
+            "scene_sentiment": "neutral",
+            "id_cards_detected": [
+                {
+                    "surname": "Smith",
+                    "names": "John Robert",
+                    "sex": "Male",
+                    "nationality": "USA",
+                    "identity_number": "123-45-6789",
+                    "date_of_birth": "1985-06-15",
+                    "country_of_birth": "USA",
+                    "status": "Valid"
+                }
+            ]
+        }
+        
+        # Check if demo data already exists
+        cursor.execute("SELECT COUNT(*) FROM visual_analysis WHERE source_path = 'input/patrol_video.mp4'")
+        count = cursor.fetchone()[0]
+        
+        if count == 0:
+            # Insert the sample data
+            cursor.execute("""
+            INSERT INTO visual_analysis 
+            (source_path, analysis_data, batch_number)
+            VALUES (%s, %s, %s)
+            """, (
+                "input/patrol_video.mp4",
+                json.dumps(sample_video_analysis),
+                "BATCH001"
+            ))
+            conn.commit()
+            print("Demo visual analysis data inserted successfully!")
+        else:
+            print("Demo visual analysis data already exists.")
         
         # List all tables in the database
         cursor.execute("""
