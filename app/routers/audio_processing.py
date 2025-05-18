@@ -33,7 +33,7 @@
 # #                 "audio_url": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen2-Audio/audio/glass-breaking-151256.mp3",
 # #             },
 # #             {"type": "text", "text": "What's that sound?"},
-# #         ],
+# #         ],jmk
 # #     },
 # #     {"role": "assistant", "content": "It is the sound of glass shattering."},
 # #     {

@@ -8,9 +8,9 @@ from app.routers import document_processing
 
 
 ROUTES = {
-    # 'VideoProcessing': video_processing,
-    # 'AudioProcessing': audio_processing,
-    # 'ModelManagement': model_management,
+    'VideoProcessing': video_processing,
+    'AudioProcessing': audio_processing,
+    'ModelManagement': model_management,
     'CLIArgs': cli_args,
     'Options': options,
     'DatabaseService': database_service,

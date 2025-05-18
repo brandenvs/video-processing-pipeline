@@ -3,9 +3,11 @@ from fastapi.responses import JSONResponse
 import os
 import json
 import datetime
+from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, JSON
 from sqlalchemy.orm import declarative_base, sessionmaker
 from typing import Optional
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Import the DB configuration from the original project
 from app.routers.database_service import DB_CONFIG
@@ -186,59 +188,69 @@ def process_document(file_path, video_path=None):
                 # If no value was found, set it as empty
                 if not value_found:
                     form_fields[label] = ""
+        document_name = os.path.basename(file_path)
         
         # Store in database
-        _, Session = init_database()
-        if Session:
-            session = Session()
-            document_name = os.path.basename(file_path)
-            form_document = store_form_fields(form_fields, document_name, session, video_path)
-            session.close()
+        # _, Session = init_database()
+        # if Session:
+        #     session = Session()
+        #     document_name = os.path.basename(file_path)
+        #     form_document = store_form_fields(form_fields, document_name, session, video_path)
+        #     session.close()
             
-            return {
-                "document_name": document_name,
-                "fields_count": len(form_fields),
-                "fields": form_fields,
-                "video_path": video_path
-            }
-        else:
-            return {
-                "error": "Database connection failed",
-                "document_name": os.path.basename(file_path),
-                "fields_count": len(form_fields),
-                "fields": form_fields
-            }
+        return {
+            "document_name": document_name,
+            "fields_count": len(form_fields),
+            "fields": form_fields,
+            "video_path": video_path
+        }
+        # else:
+        #     return {
+        #         "error": "Database connection failed",
+        #         "document_name": os.path.basename(file_path),
+        #         "fields_count": len(form_fields),
+        #         "fields": form_fields
+        #     }
             
     except Exception as e:
         return {"error": str(e)}
 
+class BaseProcessor(BaseModel):
+    system_prompt: Optional[str] = (
+        "Identify key data and fillout the given system schema"
+    )
+    max_new_tokens: Optional[int] = 512
+    source_path: Optional[str] = None
+    document_key: Optional[str] = None
 # API Endpoints
 @router.post("/process")
-async def process_document_endpoint(
-    file: UploadFile = File(...),
-    video_path: Optional[str] = Form(None),
-    background_tasks: BackgroundTasks = None
+async def process_document_endpoint(request_body: BaseProcessor,
+    # file_path:str,
+    # video_path: Optional[str] = Form(None),
+    # background_tasks: BackgroundTasks = None
 ):
     """Process a document file and extract form fields"""
     # ... existing code ...
     # Create input directory if it doesn't exist
-    input_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "input")
-    os.makedirs(input_dir, exist_ok=True)
+    # input_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "input")
+    # os.makedirs(input_dir, exist_ok=True)
     
-    # Save the uploaded file
-    file_path = os.path.join(input_dir, file.filename)
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
+    # # Save the uploaded file
+    # file_path = os.path.join(input_dir, file.filename)
+    # with open(file_path, "wb") as f:
+    #     f.write(await file.read())
     
     # Process the document
-    if background_tasks:
-        # Process in background
-        background_tasks.add_task(process_document, file_path, video_path)
-        return JSONResponse(content={"message": "Document processing started in background", "file": file.filename})
-    else:
-        # Process immediately
-        result = process_document(file_path, video_path)
-        return JSONResponse(content=result)
+    # if background_tasks:
+    #     # Process in background
+    #     background_tasks.add_task(process_document, file_path, video_path)
+    #     return JSONResponse(content={"message": "Document processing started in background", "file": s.filename})
+    # else:
+    #     # Process immediately
+    #     result = process_document(file_path, video_path)
+    #     return JSONResponse(content=result)
+
+    return process_document(request_body.source_path)
 
 @router.get("/list")
 async def list_documents():
@@ -294,7 +306,8 @@ async def get_document(document_id: int):
 
 class Qwen_Document_Integrator:
     def __init__(self):
-        self.model_path = "C:\\Users\\liano\\OneDrive\\Documents\\REST-API\\docling\\models\\Qwen3-1.7B-UD-Q8_K_XL.gguf"
+        self.model_checkpoint = None
+        self.processor = None
         self.model = None
         self._model_loaded = False
 
@@ -302,16 +315,27 @@ class Qwen_Document_Integrator:
         if self._model_loaded:
             return
 
+        model_id = "Qwen/Qwen3-1.7B"
+        self.model_checkpoint = os.path.join(
+            "models/prompt_generator", os.path.basename(model_id)
+        )
+
+        if not os.path.exists(self.model_checkpoint):
+            from huggingface_hub import snapshot_download
+            snapshot_download(repo_id=model_id, local_dir=self.model_checkpoint)
+
         try:
-            from llama_cpp import Llama
-            
-            print(f">>> Loading Qwen model from {self.model_path}")
-            self.model = Llama(
-                model_path=self.model_path,
-                n_ctx=4096,
-                n_batch=512,
-                verbose=False
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_checkpoint,
+                torch_dtype="auto",
+                device_map="auto"
             )
+            # self.model = Llama(
+            #     model_path=self.model_path,
+            #     n_ctx=4096,
+            #     n_batch=512,
+            #     verbose=False
+            # )
             self._model_loaded = True
             print(">>> Model loaded successfully")
         except Exception as e:
@@ -339,7 +363,8 @@ class Qwen_Document_Integrator:
         """
         if not self._model_loaded:
             self.load_model()
-            
+            self.processor = AutoTokenizer.from_pretrained(self.model_checkpoint)
+        
         # Find empty fields that need to be filled
         empty_fields = {}
         for field_name, field_data in form_fields.items():
@@ -418,18 +443,28 @@ class Qwen_Document_Integrator:
         Remember to maintain the exact same structure as the original form fields.
         """
         
-        # Generate completion
-        prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
-        
-        print(">>> Generating integration response")
-        response = self.model.create_completion(
-            prompt=prompt,
-            max_tokens=2048,
-            temperature=0.1,
-            top_p=0.9,
-            stop=["<|im_end|>"]
+        messages = system_prompt + [{"role": "user", "content": user_prompt}]
+        # MARK: Generate completion
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
         )
+        inputs = self.tokenizer(text, return_tensors="pt")
+        response_ids = self.model.generate(**inputs, max_new_tokens=32768)[0][len(inputs.input_ids[0]):].tolist()
+        response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+
+        print(">>> Generating integration response")
+        prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+        # response = self.model.create_completion(
+        #     prompt=prompt,
+        #     max_tokens=2048,
+        #     temperature=0.1,
+        #     top_p=0.9,
+        #     stop=["<|im_end|>"]
+        # )
         
+        print(response)
         generated_text = response["choices"][0]["text"]
         print(f">>> Generated response length: {len(generated_text)}")
         
