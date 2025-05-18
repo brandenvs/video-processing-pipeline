@@ -12,6 +12,7 @@
   - Python environment deps
   - Ubuntu (system) environment deps
   - Deployment of FastAPI endpoints
+ - Merging Document & Video processing pipelines.
 
 ## TODOs
 
