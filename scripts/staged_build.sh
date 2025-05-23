@@ -47,8 +47,7 @@ if [ $stage -eq 4 ] ; then
     echo $CUDA_HOME
     $CUDA_HOME/bin/nvcc --version
 fi
-  git config --global user.email "branden@branden.com"
-  git config --global user.name "Branden A10"
+
 if [ $stage -eq 4 ] ; then
     cd ..
     python3 -m venv .venv
