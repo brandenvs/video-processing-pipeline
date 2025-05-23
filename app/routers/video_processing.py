@@ -40,7 +40,6 @@ class BaseProcessor(BaseModel):
     )
     max_new_tokens: Optional[int] = 512
     source_path: Optional[str] = None
-    document_key: Optional[str] = None
 
 router = APIRouter()
 
@@ -149,11 +148,13 @@ class Qwen2_VQA:
             snapshot_download(repo_id=model_id, local_dir=self.model_checkpoint)
 
         # MARK: Precision
-        self.dtype = (
-            torch.float16
-            if mm.should_use_fp16(self.device)
-            else torch.bfloat16 if mm.should_use_bf16(self.device) else torch.float32
-        )
+        if mm.should_use_fp16(self.device):
+            self.dtype = torch.float16
+        elif mm.should_use_fp16(self.device):
+            self.dtype = torch.float16
+        else:
+            torch.float32
+
         print(f'>>> Selected DType: {self.dtype}')
 
         if self.dtype != torch.float16:
@@ -190,7 +191,7 @@ class Qwen2_VQA:
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_checkpoint,
             torch_dtype=self.dtype,
-            # attn_implementation="flash_attention_2",
+            attn_implementation="flash_attention_2",
             device_map=self.device,
             quantization_config=quantization_config,
         )
