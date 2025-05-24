@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import tempfile
 import time
 from typing import Optional
 import concurrent
@@ -13,6 +15,7 @@ import asyncio
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from app.routers.database_service import Db_helper
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig
+import tempfile
 
 import subprocess
 
@@ -39,11 +42,10 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
 class BaseProcessor(BaseModel):
-    system_prompt: Optional[str] = (
-        "Identify key data and fillout the given system schema"
-    )
+    system_prompt: Optional[str] = "Identify key data and fillout the given system schema"
     max_tokens: Optional[int] = 512
-    source_path: Optional[str] = None
+    model_id: Optional[str] = "qwen/Qwen2.5-VL-3B-Instruct"
+    source_path: str
 
 router = APIRouter()
 
@@ -81,21 +83,24 @@ async def process_video(request_body: BaseProcessor):
     gc.collect()
     check_memory()
 
-    scene_detection = functools.partial(
-        batch_scene_detection, request_body.source_path
-    )
+    scene_detection = functools.partial(batch_scene_detect, request_body.source_path)
     scene_detection_response = await loop.run_in_executor(executor, scene_detection)
     
     infer_obj = {
-        **scene_detection_response,
-        **request_body.model_dump(),
+        'model_id': request_body.model_id,
+        'system_prompt': request_body.system_prompt,
+        'max_tokens': request_body.max_tokens,
+        'segments': scene_detection_response['segments'],
+        'stats_scene': scene_detection_response['stats_scene']
     }
     print(infer_obj)
-    process_video = functools.partial(
-        model_manager.inference_helper, **infer_obj
-    )
+    process_video = functools.partial(model_manager.inference_helper, **infer_obj)
     processed_video_response = await loop.run_in_executor(executor, process_video)
-
+    
+    # Cleanup for next video ...
+    [os.remove(os.path.join('segments', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
+    [os.remove(os.path.join('audio', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
+    
     # for analysis_data in results:
     #     analysis_ids = []
 
@@ -116,7 +121,8 @@ async def process_video(request_body: BaseProcessor):
         # "analysis_ids": analysis_ids,
     }
 
-def calculate_mean_content_val(stats_file: str) -> float:
+
+def get_mean_content_val(stats_file: str) -> float:
     content_vals = []
     
     with open(f'segments/{stats_file}', 'r') as f:
@@ -127,7 +133,7 @@ def calculate_mean_content_val(stats_file: str) -> float:
     return sum(content_vals) / len(content_vals)
 
 
-def get_content_val_stats(stats_file: str) -> dict:
+def get_content_val(stats_file: str) -> dict:
     content_vals = []
     
     with open(stats_file, 'r') as f:
@@ -155,28 +161,39 @@ def get_content_val_stats(stats_file: str) -> dict:
     }
 
 
-def batch_scene_detection(video):
+def batch_scene_detect(video):
+    stats_scene = []
+    
+    # TODO Black box - splits
     response = subprocess.run([
         'scenedetect', '--config', 'scenedetect.cfg',
-        '-i', video, 
+        '-i', video,
         '--output', 'segments',
         'detect-content', 'split-video', '--filename', '$SCENE_NUMBER', '--copy'
     ], check=True, capture_output=True, text=True)
     segments = [f for f in os.listdir('segments') if f.endswith('.mp4')]
-    
+
     for segment in segments:
-        stats_file = f'{segment}.stats.csv'
-        
+        stats = f'{segment}_stats.csv'
+        scene = f'{segment}_scene.csv'
+        stats_obj = {
+            'stats': stats,
+            'scene': scene
+        }
+        stats_scene.append(stats_obj)        
+
+        # TODO Black box - Gets stats on segment
         response = subprocess.run([
             'scenedetect', '--config', 'scenedetect.cfg',
             '-i', f'segments/{segment}',
-            '--output', 'segments',         
-            '--stats', stats_file,
-            'detect-content', 'split-video', '--filename', '$SCENE_NUMBER', '--copy'
-
+            '--output', 'segments',
+            '--stats', stats,
+            'detect-content', 
+            'list-scenes', '-f', scene,
+            'split-video', '--filename', '$SCENE_NUMBER', '--copy'
         ], check=True, capture_output=True, text=True)
-    
-        mean_content_val = calculate_mean_content_val(stats_file)
+        
+        mean_content_val = get_mean_content_val(stats)
     
         content_threshold = 15
         if mean_content_val < content_threshold:
@@ -184,9 +201,10 @@ def batch_scene_detection(video):
 
     response = {  
         'segments': segments,
+        'stats_scene': stats_scene,
         "mean_content_val": round(mean_content_val, 3)
     }
-    # print(json.dumps(response, indent=2))
+    print(json.dumps(response, indent=2))
     return response
 
 class Qwen2_VQA:
@@ -214,7 +232,7 @@ class Qwen2_VQA:
 
         return generated_response
 
-    def load_model(self):
+    def load_model(self, model_id: str):
         if self._model_loaded:
             return
 
@@ -223,7 +241,6 @@ class Qwen2_VQA:
         check_memory()
         torch.manual_seed(42)
 
-        model_id = "qwen/Qwen2.5-VL-3B-Instruct"
         self.model_checkpoint = os.path.join(
             "models/prompt_generator", os.path.basename(model_id)
         )
@@ -290,34 +307,52 @@ class Qwen2_VQA:
 
         self._model_loaded = True
 
-    def inference_helper(self, system_prompt, max_tokens, segments: list, mean_content_val, source_path):
+    def inference_helper(self, model_id: str, system_prompt: str, max_tokens: int, segments: list, stats_scene: list):
         responses = []
-        sequence = 0
         
         if not self._model_loaded:
             print('>>> Loading model into memory')
-            self.load_model()
+            self.load_model(model_id)
 
-        segments.sort(reverse=True)
+        segments.sort(key=lambda x: int(x[:3]), reverse=False)
+        stats_scene.sort(key=lambda x: int(x['stats'].split('.')[0]))     # segments.sort(reverse=True)
 
         for seq, segment in enumerate(segments):
-            sequence += 1
             segment_path = os.path.join('segments', segment)
-            subprocess.run([
-                'ffmpeg', '-y', '-i', segment_path,
-                '-r', '5',
-                '-c:v', 'libx264',
-                '-crf', '23',
-                segment_path
-            ], check=True)
-            responses.append(self.inference(segment_path, system_prompt, max_tokens, seq))
+
+            # TODO Black box (strips audio) / no alternative really ...
+            with tempfile.TemporaryDirectory(dir='tmp') as temp_dir:
+                temp_path = os.path.join(temp_dir, segment)
+                
+                subprocess.run([
+                    'ffmpeg', '-y', '-i', segment_path,
+                    '-r', '5', '-c:v', 'libx264', '-crf', '23',
+                    '-an',
+                    temp_path,
+                    '-vn', '-c:a', 'aac',
+                    f'audio/{segment}.aac'
+                ], capture_output=True, text=True)                
+                shutil.move(temp_path, segment_path)
+
+            with open(f'segments/{stats_scene[seq]["scene"]}', 'r') as f:
+                reader = csv.DictReader(f)
+                # NOTE THIS DOES NOT WORK !!!
+                for idx, row in enumerate(reader):
+                    if idx > 0:
+                        for val in row.values():
+                            if isinstance(val, list):
+                                batch_length = float(val[-1])
+                                print(batch_length)
+        
+            responses.append(self.inference(segment_path, system_prompt, max_tokens, seq, batch_length))
+
+        print(responses)
         return responses
 
-        
-    def inference(self, segment_path, system_prompt, max_tokens, seq):
+    def inference(self, segment_path: str, system_prompt: str, max_tokens: int, seq: int, batch_length: str):
         start_time = time.time() # timer
 
-        # MARK: Batching
+        # MARK: Batching (ref)
         # for start in range(0, int(video_duration), batch):
         #     end = min(start + batch, video_duration)
         #     segments.append((start, end))
@@ -400,6 +435,7 @@ class Qwen2_VQA:
         finished_in = time.time() - start_time
         response = {
             **generated_response,
+            "batch_length": batch_length,
             "finished_in": round(finished_in, 3)
         }
         return response
