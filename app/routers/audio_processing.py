@@ -248,7 +248,8 @@ class Qwen2_Audio:
                                     "audio_url": batch,
                             },
                             {"type": "text", "text": system_prompt},
-                        },
+                            ]
+                        }
                     ]
                     
                     print('>>> Preparing for inference')
