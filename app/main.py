@@ -1,12 +1,13 @@
+import shutil
 from fastapi.concurrency import asynccontextmanager
 import psycopg2
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, HTTPException, UploadFile
 
 from pydantic import BaseModel
 from typing import Optional
 
-from app.routers import document_processing, video_processing
+# from app.routers import document_processing, video_processing
 
 
 class ProcessingResponse(BaseModel):
@@ -23,8 +24,8 @@ class ProcessingResponse(BaseModel):
 async def lifespan(app: FastAPI):
     yield
 
-    if hasattr(video_processing, "executor") and video_processing.executor:
-        video_processing.executor.shutdown(wait=True)
+    # if hasattr(video_processing, "executor") and video_processing.executor:
+    #     video_processing.executor.shutdown(wait=True)
 
 
 app = FastAPI(
@@ -33,14 +34,24 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-app.include_router(video_processing.router)
-app.include_router(document_processing.router)
+# app.include_router(video_processing.router)
+# app.include_router(document_processing.router)
 
 
 @app.get("/")
 async def root():
     return {"message": "Video Processing Pipeline - StadPrin"}
 
+
+@app.post("/upload-video")
+async def upload_video(file: UploadFile=File(...)):
+    try:
+        with open(f"uploads/{file.filename}", "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        return {"filename": file.filename, "size": file.size}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/schema")
 async def process_document():
