@@ -1,20 +1,30 @@
 # ADP Video Pipeline
 
+## Working Features (updated: 25 May)
+
+1. Scene detection & optimised video processing pipeline
+2. Document processing pipeline
+
+## Planned Features (updated: 25 May)
+
+- (**LIVE**) Deployment of FastAPI
+- **Frontend dashboard**:
+  1. Can upload & Process a video
+  2. Can upload & Process Document
+  3. Video Pipeline settings (based on processed document fields)
+  4. Dynamic video processing (based oN settings)
+- Handling live Video feed URLs for static cameras
+- Adaptive detection (rolling variance average) for body camera footage scene detection
+
 ## Branches
 
 - deploy : Final branch
 - dev : Staging branch
 - [name]-[optional:feature_name]
 
-## Main Points of Concern
+---
 
-- Automate the setup of server instances
-  - Python environment deps
-  - Ubuntu (system) environment deps
-  - Deployment of FastAPI endpoints
- - Merging Document & Video processing pipelines.
-
-## TODOs
+# OLD STUFF (removing soon ...)
 
 ### Liano
 
