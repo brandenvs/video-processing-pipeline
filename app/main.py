@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional
 
-from app.routers import document_processing, video_processing
+from app.routers import document_processing#, video_processing TODO
 
 
 class ProcessingResponse(BaseModel):
@@ -22,9 +22,7 @@ class ProcessingResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-
-    if hasattr(video_processing, "executor") and video_processing.executor:
-        video_processing.executor.shutdown(wait=True)
+    # Video processing cleanup will be added when video_processing module is implemented
 
 
 app = FastAPI(
@@ -33,7 +31,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-app.include_router(video_processing.router)
+# app.include_router(video_processing.router) TODO
 app.include_router(document_processing.router)
 
 
