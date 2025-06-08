@@ -35,7 +35,7 @@ class BaseProcessor(BaseModel):
     system_prompt: Optional[str] = "Identify key data and fillout the given system schema"
     max_new_tokens: Optional[int] = 512
     source_path: Optional[str] = None
-    document_text: Optional[str] = None  # Allow direct text input
+    #document_text: Optional[str] = None  # Allow direct text input
     document_type: Optional[str] = "form"  # Default type for processing
     document_key: Optional[str] = None
 
@@ -93,16 +93,22 @@ class FormDocument(Base):
 def normalize_field_name(field_label: str) -> str:
     """
     Normalize field labels to variable names suitable for database and API use.
+    Examples:
+    - "First Name" -> "first_name"
+    - "Officer NAMEand surname" -> "officer_name_and_surname"
+    - "Audio trancription" -> "audio_transcription"
     """
-    # Replace slashes with underscores before other processing
+    import re
+      # Replace slashes with underscores before other processing
     normalized = field_label.replace('/', '_')
     # Replace newlines with spaces first
-    normalized = normalized.replace('\n', ' ')    # Fix common typos and formatting issues (case-insensitive)
-   
-    # Remove common unnecessary words
-    cleanup_words = ['optional', 'required', 'please enter', 'enter', 'provide']
+    normalized = normalized.replace('\n', ' ')
+    
+    # Remove common unnecessary words that don't add meaning to field names
+    cleanup_words = ['optional', 'required', 'please enter', 'enter', 'provide', 'the', 'a', 'an']
     for word in cleanup_words:
-        normalized = normalized.replace(word, '')
+        # Use word boundaries to avoid partial replacements
+        normalized = re.sub(r'\b' + re.escape(word) + r'\b', '', normalized, flags=re.IGNORECASE)
     
     # Remove special characters except letters, numbers, spaces and underscores
     normalized = re.sub(r'[^a-zA-Z0-9\s_]', '', normalized.lower())
@@ -1062,12 +1068,11 @@ class QwenDocumentIntegrator:
                     'number', 'area', 'incident', 'video', 'audio', 'identity', 
                     'licence', 'plates', 'description', 'suspect', 'activities',
                     'descripcion', 'sospechoso', 'actividades', 'documento', 'patrol'
-                ])
-                # Include line if it matches field indicators OR looks field-like AND doesn't match skip patterns
+                ])                # Include line if it matches field indicators OR looks field-like AND doesn't match skip patterns
                 if ((is_field_indicator or is_field_like) and
                     not any(skip in line_lower for skip in skip_patterns)):
                     # Clean up the field name
-                    cleaned = re.sub(r'\(.*?\)', '', cleaned)
+                    cleaned = re.sub(r'\(.*?\)', '', line)
                     cleaned = re.sub(r'[^\w\s]', '', cleaned)
                     cleaned = cleaned.strip()
                     
@@ -1356,16 +1361,14 @@ class QwenDocumentIntegrator:
                 description=field_descriptions.get(field_name, ""),
                 required=True  # Default to required, could be enhanced with better detection
             )
-        
-        # Create the document schema
+          # Create the document schema
         document_schema = DocumentSchema(
             client_id=client_id,
             document_title=document_title,
             document_type=document_type,
             is_active=True,
             schema_fields=schema_fields,
-            created_by=created_by,
-            created_on=datetime.datetime.utcnow().isoformat()
+            created_by=created_by
         )
         
         return document_schema
@@ -1434,8 +1437,7 @@ class QwenDocumentIntegrator:
                         timeout_seconds=60,  # Longer timeout for form integration
                         max_new_tokens=1024,
                         do_sample=True,
-                        temperature=0.7,
-                        top_p=0.9,
+                        temperature=0.7,                        top_p=0.9,
                     )
                 except TimeoutError as e:
                     print(f">>> Form integration generation timed out: {str(e)}")
@@ -1443,7 +1445,6 @@ class QwenDocumentIntegrator:
             
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
- 
             result = self.process_generated_response(response)
             
             if "error" in result or not result:
@@ -1460,39 +1461,9 @@ class QwenDocumentIntegrator:
                     pass
                 
                 return form_fields
-                
-            return result
         except Exception as e:
             print(f"Error integrating data: {str(e)}")
             return form_fields
-
-    def _create_document_schema(self, field_names, field_types, field_descriptions, 
-                               document_type="form", client_id="default", 
-                               document_title="Extracted Document", created_by="system"):
-        """Create a DocumentSchema object from extracted field data"""
-        
-        # Build schema_fields dictionary
-        schema_fields = {}
-        for field_name in field_names:
-            schema_fields[field_name] = SchemaField(
-                label=field_name,
-                field_type=field_types.get(field_name, "text"),
-                description=field_descriptions.get(field_name, ""),
-                required=True  # Default to required, could be enhanced with better detection
-            )
-        
-        # Create the document schema
-        document_schema = DocumentSchema(
-            client_id=client_id,
-            document_title=document_title,
-            document_type=document_type,
-            is_active=True,
-            schema_fields=schema_fields,
-            created_by=created_by,
-            created_on=datetime.datetime.utcnow().isoformat()
-        )
-        
-        return document_schema
 
     def _generate_dynamic_system_prompt(self, document_schema: DocumentSchema):
         """Generate a dynamic system prompt based on the document schema"""
