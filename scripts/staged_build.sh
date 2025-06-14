@@ -36,10 +36,11 @@ fi
 
 if [ $stage -eq 4 ] ; then
     apt install nvidia-utils-535
-    apt install nvidia-settings 
+    apt install nvidia-settings
     apt install nvtop
     apt install nvidia-cuda-toolkit
     apt install python3-dev
+    sudo apt install ffmpeg
     dpkg -L nvidia-utils-535 | grep bin
     export CUDA_HOME=/usr
     echo 'export CUDA_HOME=/usr' >> ~/.bashrc
@@ -48,7 +49,7 @@ if [ $stage -eq 4 ] ; then
     $CUDA_HOME/bin/nvcc --version
 fi
 
-if [ $stage -eq 4 ] ; then
+if [ $stage -eq 5 ] ; then
     cd ..
     python3 -m venv .venv
     source .venv/bin/activate

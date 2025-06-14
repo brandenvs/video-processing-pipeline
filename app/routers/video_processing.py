@@ -1,16 +1,23 @@
-# import json
-# import os
-# from pathlib import Path
-# import time
-# from typing import Optional
-# import concurrent
-# from pydantic import BaseModel
-# import torch
-# import gc
-# import asyncio
-# from torch.nn.attention import SDPBackend, sdpa_kernel
-# from app.routers.database_service import Db_helper
-# from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig
+import csv
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import tempfile
+import time
+from typing import Optional
+import concurrent
+from pydantic import BaseModel
+import torch
+import gc
+import asyncio
+from torch.nn.attention import SDPBackend, sdpa_kernel
+from app.routers.database_service import Db_helper
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig
+import tempfile
+
+import subprocess
 
 # # from transformers import (
 # #     Qwen2_5_VLForConditionalGeneration,
@@ -35,11 +42,10 @@
 
 
 class BaseProcessor(BaseModel):
-    system_prompt: Optional[str] = (
-        "Identify key data and fillout the given system schema"
-    )
-    max_new_tokens: Optional[int] = 512
-    source_path: Optional[str] = None
+    system_prompt: Optional[str] = "Identify key data and fillout the given system schema"
+    max_tokens: Optional[int] = 512
+    model_id: Optional[str] = "qwen/Qwen2.5-VL-3B-Instruct"
+    source_path: str
 
 router = APIRouter()
 
@@ -77,31 +83,129 @@ router = APIRouter()
 #     gc.collect()
 #     check_memory()
 
-#     inference_task = functools.partial(
-#         model_manager.inference, **request_body.model_dump()
-#     )
-#     results = await loop.run_in_executor(executor, inference_task)
+    scene_detection = functools.partial(batch_scene_detect, request_body.source_path)
+    scene_detection_response = await loop.run_in_executor(executor, scene_detection)
+    
+    infer_obj = {
+        'model_id': request_body.model_id,
+        'system_prompt': request_body.system_prompt,
+        'max_tokens': request_body.max_tokens,
+        'segments': scene_detection_response['segments'],
+        'stats_scene': scene_detection_response['stats_scene']
+    }
+    print(infer_obj)
+    process_video = functools.partial(model_manager.inference_helper, **infer_obj)
+    processed_video_response = await loop.run_in_executor(executor, process_video)
+    
+    # Cleanup for next video ...
+    [os.remove(os.path.join('segments', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
+    [os.remove(os.path.join('audio', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
+    
+    # for analysis_data in results:
+    #     analysis_ids = []
 
-#     for analysis_data in results:
-#         analysis_ids = []
+    #     # Store in database
+    #     db_helper = Db_helper()
+    #     analysis_id = db_helper.video_analysis(
+    #         analysis_data, source_path=request_body.source_path
+    #     )
 
-#         # Store in database
-#         db_helper = Db_helper()
-#         analysis_id = db_helper.video_analysis(
-#             analysis_data, source_path=request_body.source_path
-#         )
+    #     if analysis_id:
+    #         # analysis_data['id'] = analysis_id
+    #         analysis_ids.append(analysis_id)
 
-#         if analysis_id:
-#             # analysis_data['id'] = analysis_id
-#             analysis_ids.append(analysis_id)
+    return {
+        "status": "success",
+        "scene_detection_response": scene_detection_response,
+        "processed_video_response": processed_video_response
+        # "analysis_ids": analysis_ids,
+    }
 
-#     print(results)
-#     return {
-#         "status": "success",
-#         "analysis_ids": analysis_ids,
-#         "results": results,
-#     }
 
+def get_mean_content_val(stats_file: str) -> float:
+    content_vals = []
+    
+    with open(f'segments/{stats_file}', 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            content_vals.append(float(row['content_val']))
+    
+    return sum(content_vals) / len(content_vals)
+
+
+def get_content_val(stats_file: str) -> dict:
+    content_vals = []
+    
+    with open(stats_file, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            content_vals.append(float(row['content_val']))
+    
+    content_vals.sort()
+    n = len(content_vals)
+    
+    mean_val = sum(content_vals) / n
+    median_val = content_vals[n // 2] if n % 2 == 1 else (content_vals[n // 2 - 1] + content_vals[n // 2]) / 2
+    variance = sum((x - mean_val) ** 2 for x in content_vals) / n
+    
+    return {
+        'count': n,
+        'min': min(content_vals),
+        'max': max(content_vals),
+        'mean': mean_val,
+        'median': median_val,
+        'std': variance ** 0.5,
+        'p25': content_vals[n // 4],
+        'p75': content_vals[3 * n // 4],
+        'p90': content_vals[int(0.9 * n)]
+    }
+
+
+def batch_scene_detect(video):
+    stats_scene = []
+    
+    # TODO Black box - splits
+    response = subprocess.run([
+        'scenedetect', '--config', 'scenedetect.cfg',
+        '-i', video,
+        '--output', 'segments',
+        'detect-content', 'split-video', '--filename', '$SCENE_NUMBER', '--copy'
+    ], check=True, capture_output=True, text=True)
+    segments = [f for f in os.listdir('segments') if f.endswith('.mp4')]
+
+    for segment in segments:
+        stats = f'{segment}_stats.csv'
+        scene = f'{segment}_scene.csv'
+        stats_obj = {
+            'stats': stats,
+            'scene': scene
+        }
+        stats_scene.append(stats_obj)        
+
+        # TODO Black box - Gets stats on segment
+        response = subprocess.run([
+            'scenedetect', '--config', 'scenedetect.cfg',
+            '-i', f'segments/{segment}',
+            '--output', 'segments',
+            '--stats', stats,
+            'detect-content', 
+            'list-scenes', '-f', scene,
+            'split-video', '--filename', '$SCENE_NUMBER', '--copy'
+        ], check=True, capture_output=True, text=True)
+        
+        mean_content_val = get_mean_content_val(stats)
+    
+        content_threshold = 15
+        if mean_content_val < content_threshold:
+            _ = segments.pop(segments.index(segment))
+
+    response = {  
+        'segments': segments,
+        'stats_scene': stats_scene,
+        "mean_content_val": round(mean_content_val, 3)
+    }
+    print(json.dumps(response, indent=2))
+    return response
 
 # class Qwen2_VQA:
 #     def __init__(self):
@@ -128,19 +232,18 @@ router = APIRouter()
 
 #         return generated_response
 
-#     def load_model(self):
-#         if self._model_loaded:
-#             return
+    def load_model(self, model_id: str):
+        if self._model_loaded:
+            return
 
 #         torch.cuda.empty_cache()
 #         print(gc.collect())
 #         check_memory()
 #         torch.manual_seed(42)
 
-#         model_id = "qwen/Qwen2.5-VL-3B-Instruct"
-#         self.model_checkpoint = os.path.join(
-#             "models/prompt_generator", os.path.basename(model_id)
-#         )
+        self.model_checkpoint = os.path.join(
+            "models/prompt_generator", os.path.basename(model_id)
+        )
 
 #         if not os.path.exists(self.model_checkpoint):
 #             from huggingface_hub import snapshot_download
@@ -204,185 +307,139 @@ router = APIRouter()
 
 #         self._model_loaded = True
 
-#     def process_batch(self, start, end, segment, i):
-#         video = VideoFileClip(segment)
-#         segment_path = os.path.join('segments', f"batch_{i+1}.mp4")
-
-#         segment = video.subclipped(start, end)
-#         segment = segment.with_fps(5)
-#         segment.write_videofile(
-#             segment_path,
-#             codec="libx264",
-#             audio_codec="aac",
-#             temp_audiofile=f"audio/temp-audio-{i}.m4a",
-#             remove_temp=True, # REMOVE
-#             logger=None
-#         )
-
-#         segment.close()
-#         video.close()
-#         return segment_path
-
-#     def inference(
-#         self,
-#         system_prompt,
-#         max_new_tokens,
-#         source_path=None,
-#     ):
-#         results = []
-#         batches = []
-#         segments = []
-#         batch = 2
-
-        os.makedirs('segments', exist_ok=True)
-        os.makedirs('audio', exist_ok=True)  # Ensure audio temp dir exists
-
-#         start_time = time.time() # timer
+    def inference_helper(self, model_id: str, system_prompt: str, max_tokens: int, segments: list, stats_scene: list):
+        responses = []
         
-        try:
-            video = VideoFileClip(source_path)
-            video_duration = video.duration
-            video.close() 
+        if not self._model_loaded:
+            print('>>> Loading model into memory')
+            self.load_model(model_id)
 
-            # MARK: Batching
-            for start in range(0, int(video_duration), batch):
-                end = min(start + batch, video_duration)
-                segments.append((start, end))
+        segments.sort(key=lambda x: int(x[:3]), reverse=False)
+        stats_scene.sort(key=lambda x: int(x['stats'].split('.')[0]))     # segments.sort(reverse=True)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                print('>>> Processing segments')
-                video_to_batches = {
-                    executor.submit(self.process_batch, 
-                                    start, end, source_path, idx):
-                                    idx for idx, (start, end) in enumerate(segments)
-                }
+        for seq, segment in enumerate(segments):
+            segment_path = os.path.join('segments', segment)
 
-            for future in concurrent.futures.as_completed(video_to_batches):
-                batch = future.result()
-                if batch:
-                    batches.append(batch)
-
-            elapsed_time = time.time() - start_time # timer logged
-            print(f"Batching completed in {elapsed_time:.2f} seconds")
-
-            # MARK: Inference
-            if not self._model_loaded:
-                print('>>> Loading model into memory')
-                self.load_model()
-
-            batches.sort(key=lambda filename: int(filename.split('_')[-1].split('.')[0]))
-
-            sequence_no = 0
-            for batch in batches:
-                try:
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": """You are an expert visual analysis system.
-                            Analyze the video and structure a concise JSON response structured as follows.
-
-                            Frame activity - A concise description of is happening within the video.
-                            Objects detected - A list of objects identified within a close proximity.
-                            Cars detected - A list of JSON objects with the following properties: Car license plate(if visible), Color and Model.
-                            People detected - A list of JSON objects with the following properties: Estimated Height, Age, Race, Emotional state, and proximity
-                            Scene sentiment - Either 'neutral', 'dangerous' or 'unknown'.
-                            ID cards detected - A list of JSON objects with the following properties: Surname, Names, Sex, Nationality, Identity Number, Date of Birth, Country of Birth, Status""",
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "video", "video": batch},
-                                {"type": "text", "text": system_prompt},
-                            ],
-                        },
-                    ]
-
-                    print('>>> Preparation for inference')
-                    # Preparation for inference
-                    system_prompts = self.processor.apply_chat_template(
-                        messages, tokenize=False, add_generation_prompt=True
-                    )
-                    image_inputs, video_inputs = process_vision_info(messages)
-
-                    check_memory(self.device)
-
-                    print('Preparing inputs ....')
-                    inputs = self.processor(
-                        text=system_prompts,
-                        videos=video_inputs,
-                        images=image_inputs,
-                        padding=True,
-                        return_tensors="pt",
-                    )
-                    inputs = inputs.to(self.device)
-                    
-                    # Free memory before generating
-                    torch.cuda.empty_cache()
-                    gc.collect()
-
-                    print('>>> Inference: Generation of the output')
-                    outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
-
-                    generated_ids_trimmed = [
-                        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, outputs)
-                    ]
-
-                    generated_response = self.processor.batch_decode(
-                        generated_ids_trimmed,
-                        skip_special_tokens=True,
-                        clean_up_tokenization_spaces=False,
-                    )
-                    sequence_no += 1
-                    generated_response = self.process_generated_response(generated_response[0], sequence_no)
-
-                    finished_in = time.time() - start_time
-                    result = {
-                        **generated_response,
-                        'sequence_no': sequence_no,
-                        "finished_in": round(finished_in, 3)
-                    }
-                    print(json.dumps(result, indent=2))
-                    results.append(result)
-                    
-                except Exception as e:
-                    print(f"Error processing batch {batch}: {str(e)}")
-                finally:
-                    # Delete batch file immediately after processing
-                    try:
-                        if os.path.exists(batch):
-                            os.remove(batch)
-                            print(f"Deleted processed batch: {batch}")
-                    except Exception as cleanup_err:
-                        print(f"Failed to clean up batch file {batch}: {str(cleanup_err)}")
-                    
-                    # Free memory after each batch
-                    torch.cuda.empty_cache()
-                    gc.collect()
-
-            # Final cleanup of any remaining files (belt and suspenders)
-            try:
-                for dir_path in ['segments', 'audio']:
-                    if os.path.exists(dir_path):
-                        for f in os.listdir(dir_path):
-                            file_path = os.path.join(dir_path, f)
-                            if os.path.isfile(file_path):
-                                os.remove(file_path)
-                                print(f"Cleaned up remaining file: {file_path}")
-            except Exception as final_err:
-                print(f"Error in final cleanup: {str(final_err)}")
+            # TODO Black box (strips audio) / no alternative really ...
+            with tempfile.TemporaryDirectory(dir='tmp') as temp_dir:
+                temp_path = os.path.join(temp_dir, segment)
                 
-            return results
-        except Exception as e:
-            print(f"Fatal error in inference: {str(e)}")
-            # Attempt cleanup even on catastrophic failure
-            try:
-                for dir_path in ['segments', 'audio']:
-                    if os.path.exists(dir_path):
-                        for f in os.listdir(dir_path):
-                            file_path = os.path.join(dir_path, f)
-                            if os.path.isfile(file_path):
-                                os.remove(file_path)
-            except:
-                pass
-            raise
+                subprocess.run([
+                    'ffmpeg', '-y', '-i', segment_path,
+                    '-r', '5', '-c:v', 'libx264', '-crf', '23',
+                    '-an',
+                    temp_path,
+                    '-vn', '-c:a', 'aac',
+                    f'audio/{segment}.aac'
+                ], capture_output=True, text=True)                
+                shutil.move(temp_path, segment_path)
+
+            with open(f'segments/{stats_scene[seq]["scene"]}', 'r') as f:
+                reader = csv.DictReader(f)
+                # NOTE THIS DOES NOT WORK !!!
+                for idx, row in enumerate(reader):
+                    if idx > 0:
+                        for val in row.values():
+                            if isinstance(val, list):
+                                batch_length = float(val[-1])
+                                print(batch_length)
+        
+            responses.append(self.inference(segment_path, system_prompt, max_tokens, seq, batch_length))
+
+        print(responses)
+        return responses
+
+    def inference(self, segment_path: str, system_prompt: str, max_tokens: int, seq: int, batch_length: str):
+        start_time = time.time() # timer
+
+        # MARK: Batching (ref)
+        # for start in range(0, int(video_duration), batch):
+        #     end = min(start + batch, video_duration)
+        #     segments.append((start, end))
+        
+        # with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        #     print('>>> Processing segments')
+        #     video_to_batches = {
+        #         executor.submit(self.process_batch, 
+        #             start, end, source_path, idx):
+        #             idx for idx, (start, end) in enumerate(segments)
+        #     }
+
+        # for future in concurrent.futures.as_completed(video_to_batches):
+        #     batch = future.result()
+        #     if batch:
+        #         batches.append(batch)
+
+        # elapsed_time = time.time() - start_time # timer logged
+        # print(f"Batching completed in {elapsed_time:.2f} seconds")
+
+        # batches.sort(key=lambda filename: int(filename.split('_')[-1].split('.')[0]))
+
+        messages = [
+            {
+                "role": "system",
+                "content": """You are an expert visual analysis system.
+                Analyze the video and structure a concise JSON response structured as follows.
+
+                Frame activity - A concise description of is happening within the video.
+                Objects detected - A list of objects identified within a close proximity.
+                Cars detected - A list of JSON objects with the following properties: Car license plate(if visible), Color and Model.
+                People detected - A list of JSON objects with the following properties: Estimated Height, Age, Race, Emotional state, and proximity
+                Scene sentiment - Either 'neutral', 'dangerous' or 'unknown'.
+                ID cards detected - A list of JSON objects with the following properties: Surname, Names, Sex, Nationality, Identity Number, Date of Birth, Country of Birth, Status""",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video", "video": segment_path},
+                    {"type": "text", "text": system_prompt},
+                ],
+            },
+        ]
+
+        print('>>> Preparation for inference')
+        system_prompts = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        image_inputs, video_inputs = process_vision_info(messages)
+
+        check_memory(self.device)
+
+        print('Preparing inputs ....')
+        inputs = self.processor(
+            text=system_prompts,
+            videos=video_inputs,
+            images=image_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs =  inputs.to(self.device)
+
+        print('>>> Inference: Generation of the output')
+        outputs = self.model.generate(**inputs, max_new_tokens=max_tokens)
+
+        # with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+        #     outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+        # generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
+        ]
+
+        generated_response = self.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+        generated_response = self.process_generated_response(generated_response[0], seq)
+
+        finished_in = time.time() - start_time
+        response = {
+            **generated_response,
+            "batch_length": batch_length,
+            "finished_in": round(finished_in, 3)
+        }
+        return response
+
+
+model_manager = Qwen2_VQA()
 
