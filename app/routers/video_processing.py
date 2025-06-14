@@ -34,15 +34,14 @@
 # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
-# class BaseProcessor(BaseModel):
-#     system_prompt: Optional[str] = (
-#         "Identify key data and fillout the given system schema"
-#     )
-#     max_new_tokens: Optional[int] = 512
-#     source_path: Optional[str] = None
-#     document_key: Optional[str] = None
+class BaseProcessor(BaseModel):
+    system_prompt: Optional[str] = (
+        "Identify key data and fillout the given system schema"
+    )
+    max_new_tokens: Optional[int] = 512
+    source_path: Optional[str] = None
 
-# router = APIRouter()
+router = APIRouter()
 
 # router = APIRouter(
 #     prefix="/process",
@@ -148,13 +147,15 @@
 
 #             snapshot_download(repo_id=model_id, local_dir=self.model_checkpoint)
 
-#         # MARK: Precision
-#         self.dtype = (
-#             torch.float16
-#             if mm.should_use_fp16(self.device)
-#             else torch.bfloat16 if mm.should_use_bf16(self.device) else torch.float32
-#         )
-#         print(f'>>> Selected DType: {self.dtype}')
+        # MARK: Precision
+        if mm.should_use_fp16(self.device):
+            self.dtype = torch.float16
+        elif mm.should_use_fp16(self.device):
+            self.dtype = torch.float16
+        else:
+            torch.float32
+
+        print(f'>>> Selected DType: {self.dtype}')
 
 #         if self.dtype != torch.float16:
 #             quantization_config = BitsAndBytesConfig(
@@ -186,14 +187,14 @@
 #         else:
 #             print(">>> CUDA not available")
     
-#         print(f'>>> Selected Device: {self.device}')
-#         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-#             self.model_checkpoint,
-#             torch_dtype=self.dtype,
-#             # attn_implementation="flash_attention_2",
-#             device_map=self.device,
-#             quantization_config=quantization_config,
-#         )
+        print(f'>>> Selected Device: {self.device}')
+        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            self.model_checkpoint,
+            torch_dtype=self.dtype,
+            attn_implementation="flash_attention_2",
+            device_map=self.device,
+            quantization_config=quantization_config,
+        )
 
 #         self.processor = AutoProcessor.from_pretrained(
 #             self.model_checkpoint,
