@@ -10,16 +10,50 @@ import subprocess
 import re
 import torch
 import atexit
-import requests  # Added for URL handling
-import tempfile  # Added for temporary file management
-import urllib.parse  # Added for URL parsing
-import threading  # Added for threading support
+import requests 
+import tempfile
+import urllib.parse
+import threading 
+import traceback  
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from app.routers import model_management as mm
+
+
+def normalize_field_name(field_name: str) -> str:
+    """Normalize field name to snake_case and clean it up"""
+    if not field_name:
+        return ""
+    
+    # Convert to lowercase and replace spaces/special chars with underscores
+    normalized = re.sub(r'[^\w\s]', ' ', field_name.lower())
+    normalized = re.sub(r'\s+', '_', normalized.strip())
+    
+    # Remove multiple underscores and trailing/leading underscores
+    normalized = re.sub(r'_+', '_', normalized).strip('_')
+    
+    return normalized
+
+
+class SchemaField(BaseModel):
+    """Schema field definition"""
+    label: str
+    field_type: str = "text"
+    description: Optional[str] = None
+    required: bool = False
+
+
+class DocumentSchema(BaseModel):
+    """Document schema definition"""
+    client_id: str = "default"
+    document_title: str
+    document_type: str
+    is_active: bool = True
+    schema_fields: Dict[str, SchemaField]
+    created_by: str = "system"
 
 
 class BaseProcessor(BaseModel):
@@ -603,19 +637,14 @@ class QwenDocumentIntegrator:
             else:
                 print(">>> Loading model on CPU with optimizations")
                 # CPU-specific optimizations
-                loading_kwargs.update({
-                    "device_map": "cpu",
+                loading_kwargs.update({                    "device_map": "cpu",
                     "max_memory": {"cpu": "4GB"},  # Limit CPU memory usage
                     "offload_folder": self.OFFLOAD_DIR,
                 })
             
             print(">>> Executing model loading...")
             # Load with timeout protection
-            import signal
             import threading
-            
-            def timeout_handler(signum, frame):
-                raise TimeoutError("Model loading timed out")
             
             result = [None]
             exception = [None]
@@ -753,7 +782,7 @@ class QwenDocumentIntegrator:
             inference_task = functools.partial(
                 self.inference, **request_body.model_dump()
             )
-              results = await loop.run_in_executor(executor, inference_task)
+            results = await loop.run_in_executor(executor, inference_task)
             
             return {
                 "status": "success" if results and "error" not in results else "error",
@@ -824,10 +853,9 @@ class QwenDocumentIntegrator:
                 field_names = ['name', 'date', 'location', 'description']
         
         print(f">>> Fast extraction completed: {len(field_names)} fields found/created")
-        
-        # Create document schema and generate dynamic prompt
+          # Create document schema and generate dynamic prompt
         document_type = kwargs.get('document_type', 'form')
-        client_id = kwargs.get('client_id', 'default')
+        client_id = kwargs.get('client_id') or 'default'  # Ensure client_id is never None
         document_title = kwargs.get('document_title', os.path.basename(source_path) if source_path else 'Extracted Document')
         
         # Create reasonable default field types and descriptions
@@ -905,10 +933,9 @@ class QwenDocumentIntegrator:
         # Create reasonable default field types and descriptions
         field_types = {name: "text" for name in field_names}
         field_descriptions = {name: f"Information related to {name.lower().replace('_', ' ')}" for name in field_names}
-        
-        # Create document schema and generate dynamic prompt
+          # Create document schema and generate dynamic prompt
         document_type = kwargs.get('document_type', 'form')
-        client_id = kwargs.get('client_id', 'default')
+        client_id = kwargs.get('client_id') or 'default'  # Ensure client_id is never None
         document_title = kwargs.get('document_title', 'Extracted Document')
         
         document_schema = self._create_document_schema(
@@ -1109,7 +1136,8 @@ class QwenDocumentIntegrator:
     def _generate_video_processing_prompt(self, field_names, field_descriptions):
         """Generate a video processing prompt based on extracted form fields."""
         
-        if not field_names:            return {
+        if not field_names:
+            return {
                 "prompt": "Analyze the video for any relevant information that could be used to fill out form fields.",
                 "focus_areas": ["general_information"]
             }
@@ -1371,8 +1399,7 @@ class QwenDocumentIntegrator:
                 print(f"Failed to load model: {str(e)}")
                 return form_fields
         
-        try:
-            # Extract relevant data from visual analysis
+        try:            # Extract relevant data from visual analysis
             visual_data = {}
             for analysis in visual_analysis:
                 if 'analysis_data' in analysis and analysis['analysis_data']:
@@ -1417,7 +1444,6 @@ class QwenDocumentIntegrator:
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
             result = self.process_generated_response(response)
-            
             if "error" in result or not result:
                 return form_fields
                 
@@ -1435,14 +1461,6 @@ class QwenDocumentIntegrator:
         except Exception as e:
             print(f"Error integrating data: {str(e)}")
             return form_fields
-
-    def _generate_dynamic_system_prompt(self, document_schema: DocumentSchema):
-        """Generate a dynamic system prompt based on the document schema"""
-        try:
-            return self.dynamic_prompt_generator.generate_system_prompt(document_schema)
-        except Exception as e:
-            print(f"Error generating dynamic prompt: {e}")
-            return "Extract information from the document and fill the specified fields accurately."
 
 document_integrator = QwenDocumentIntegrator()
 
