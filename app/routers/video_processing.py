@@ -1,4 +1,3 @@
-# pyright: reportGeneralTypeIssues=false
 import csv
 import json
 import os
@@ -15,7 +14,7 @@ import gc
 import asyncio
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from app.routers.database_service import Db_helper
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig # type: ignore
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig
 import tempfile
 
 import subprocess
@@ -66,18 +65,15 @@ def cleanup_executor():
 atexit.register(cleanup_executor)
 
 
-def check_memory(device=mm.get_torch_device()):
+def check_memory(device=mm.get_torch_device):
     print("Device Loaded: ", device)
-    result = mm.get_total_memory(device)
 
-    if isinstance(result, tuple):
-      total_mem_gb = result[0] / (1024 * 1024 * 1024)
-    else:
-      total_mem_gb = result
-    print(f"GPU has {total_mem_gb} GBs")
+    total_mem = mm.get_total_memory(device) / (1024 * 1024 * 1024)
+    print(f"GPU has {total_mem} GBs")
 
-    print(f"GPU memory checked: {total_mem_gb:.2f}GB available.")
-    return (total_mem_gb, result)
+    free_mem_gb = mm.get_free_memory(device) / (1024 * 1024 * 1024)
+    print(f"GPU memory checked: {free_mem_gb:.2f}GB available.")
+    return (free_mem_gb, total_mem)
 
 
 @router.post("/process/")
@@ -402,10 +398,10 @@ class Qwen2_VQA:
         ]
 
         print('>>> Preparation for inference')
-        system_prompts = self.processor.apply_chat_template( # type: ignore
+        system_prompts = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        video_inputs, image_inputs = process_vision_info(messages) # type: ignore
+        image_inputs, video_inputs = process_vision_info(messages)
 
         check_memory(self.device)
 
@@ -416,11 +412,11 @@ class Qwen2_VQA:
             images=image_inputs,
             padding=True,
             return_tensors="pt",
-        ) # type: ignore
+        )
         inputs =  inputs.to(self.device)
 
         print('>>> Inference: Generation of the output')
-        outputs = self.model.generate(**inputs, max_new_tokens=max_tokens) # type: ignore
+        outputs = self.model.generate(**inputs, max_new_tokens=max_tokens)
 
         # with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
         #     outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
@@ -429,7 +425,7 @@ class Qwen2_VQA:
             out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
         ]
 
-        generated_response = self.processor.batch_decode( # type: ignore
+        generated_response = self.processor.batch_decode(
             generated_ids_trimmed,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
