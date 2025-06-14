@@ -1,10 +1,10 @@
 import psycopg2
 
 conn = psycopg2.connect(
-    dbname="postgres",
+    dbname="stadprin",
     user="postgres",
     host="localhost",
-    password="postgres",
+    password="posty",
 )
 cursor = conn.cursor()
 
@@ -25,7 +25,7 @@ conn = psycopg2.connect(
     dbname="stadprin",
     user="postgres",
     host="localhost",
-    password="postgres",
+    password="posty",
 )
 
 cursor = conn.cursor()
@@ -66,15 +66,23 @@ cursor.execute(
 )
 print("Created form_fields table...")
 
-# Create form_documents table
+# Create form_documents table with enhanced schema
 cursor.execute(
     """
     CREATE TABLE IF NOT EXISTS form_documents (
         id SERIAL PRIMARY KEY,
-        document_name TEXT,
+        client_id TEXT,
+        document_title TEXT,
+        document_type TEXT,
+        is_active BOOLEAN DEFAULT TRUE,
+        schema_fields JSONB,
+        generated_system_prompt TEXT,
+        video_processing_prompt JSONB,
         document_path TEXT,
         video_path TEXT,
-        fields_json JSONB,
+        source_path TEXT,
+        created_by TEXT,
+        created_on TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         processed_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
 """
@@ -85,6 +93,5 @@ print("Created form_documents table...")
 conn.commit()
 print("Tables created successfully!")
 
-# Add pgai vectorconn.commit()("Created visual_analysis")
 cursor.close()
 conn.close()

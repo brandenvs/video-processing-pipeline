@@ -22,9 +22,7 @@ class ProcessingResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-
-    if hasattr(video_processing, "executor") and video_processing.executor:
-        video_processing.executor.shutdown(wait=True)
+    # Video processing cleanup will be added when video_processing module is implemented
 
     # audio processing 
     if hasattr(audio_processing, "executor") and audio_processing.executor:
