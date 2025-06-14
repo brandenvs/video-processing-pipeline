@@ -9,7 +9,8 @@ from pydantic import BaseModel
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import document_processing, video_processing, audio_processing
+from app.routers import document_processing, audio_processing, video_processing
+from app.routers import video_processing
 
 
 class ProcessingResponse(BaseModel):
@@ -25,7 +26,9 @@ class ProcessingResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    # Video processing cleanup will be added when video_processing module is implemented
+
+    if hasattr(video_processing, "executor") and video_processing.executor:
+        video_processing.executor.shutdown(wait=True)
 
     # audio processing 
     if hasattr(audio_processing, "executor") and audio_processing.executor:
