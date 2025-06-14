@@ -19,7 +19,7 @@
 import psutil
 import logging
 from enum import Enum
-from app.routers.cli_args import args, PerformanceFeature
+from routers.cli_args import args, PerformanceFeature
 import torch
 import sys
 import platform

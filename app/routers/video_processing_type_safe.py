@@ -14,7 +14,7 @@ import torch
 import gc
 import asyncio
 from torch.nn.attention import SDPBackend, sdpa_kernel
-from app.routers.database_service import Db_helper
+from routers.database_service import Db_helper
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig
 import tempfile
 
@@ -27,7 +27,7 @@ import subprocess
 # )
 from qwen_vl_utils import process_vision_info
 
-from app.routers import model_management as mm
+from routers import model_management as mm
 
 from fastapi import APIRouter
 
