@@ -10,34 +10,26 @@ import subprocess
 import re
 import torch
 import atexit
-import psycopg2
+import requests  # Added for URL handling
+import tempfile  # Added for temporary file management
+import urllib.parse  # Added for URL parsing
+import threading  # Added for threading support
 from pydantic import BaseModel
-from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, Boolean
-from sqlalchemy.orm import declarative_base
-from sqlalchemy.dialects.postgresql import JSONB
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-# Import the DB configuration from the original project
-from app.routers.database_service import DB_CONFIG, Db_helper
-
 from app.routers import model_management as mm
-
-
-DB_CONNECTION_ERROR = "Database connection failed"
-DOC_NOT_FOUND_ERROR = "Document not found"
-NO_VIDEO_ERROR = "No video associated with this document"
-NO_ANALYSIS_ERROR = "No visual analysis data found for the associated video"
 
 
 class BaseProcessor(BaseModel):
     system_prompt: Optional[str] = "Identify key data and fillout the given system schema"
     max_new_tokens: Optional[int] = 512
     source_path: Optional[str] = None
-    #document_text: Optional[str] = None  # Allow direct text input
+    source_url: Optional[str] = None  # New field for URL-based document processing
     document_type: Optional[str] = "form"  # Default type for processing
     document_key: Optional[str] = None
+    client_id: Optional[str] = None  # New field for client identification
 
 router = APIRouter(
     prefix="/documents",
@@ -61,89 +53,6 @@ def check_memory(device=mm.get_torch_device()):
     free_mem_gb = mm.get_free_memory(device) / (1024 * 1024 * 1024)
     print(f"GPU memory checked: {free_mem_gb:.2f}GB available.")
     return (free_mem_gb, total_mem)
-
-# Create a base class for our models
-Base = declarative_base()
-
-class FormDocument(Base):
-    """Database model for storing form documents with enhanced schema support"""
-    __tablename__ = 'form_documents'
-    
-    id = Column(Integer, primary_key=True)
-    client_id = Column(String(255))
-    document_title = Column(String(255))
-    document_type = Column(String(100))
-    is_active = Column(Boolean, default=True)
-    schema_fields = Column(JSONB)  # Brandens structure
-    generated_system_prompt = Column(Text)  # Dynamically generated system prompt
-    video_processing_prompt = Column(JSONB)  # JSONB
-    document_path = Column(String(512))
-    video_path = Column(String(512), nullable=True)
-    source_path = Column(String(512), nullable=True)
-    created_by = Column(String(255))
-    created_on = Column(DateTime, default=datetime.datetime.utcnow)
-    processed_date = Column(DateTime, default=datetime.datetime.utcnow)
-      # Keep field_names for backward compatibility, just incase.
-    field_names = Column(JSON, nullable=True)
-    
-    def __repr__(self):
-        return f"<FormDocument(title='{self.document_title}', type='{self.document_type}', client='{self.client_id}')>"
-
-# Field normalization utility
-def normalize_field_name(field_label: str) -> str:
-    """
-    Normalize field labels to variable names suitable for database and API use.
-    Examples:
-    - "First Name" -> "first_name"
-    - "Officer NAMEand surname" -> "officer_name_and_surname"
-    - "Audio trancription" -> "audio_transcription"
-    """
-    import re
-      # Replace slashes with underscores before other processing
-    normalized = field_label.replace('/', '_')
-    # Replace newlines with spaces first
-    normalized = normalized.replace('\n', ' ')
-    
-    # Remove common unnecessary words that don't add meaning to field names
-    cleanup_words = ['optional', 'required', 'please enter', 'enter', 'provide', 'the', 'a', 'an']
-    for word in cleanup_words:
-        # Use word boundaries to avoid partial replacements
-        normalized = re.sub(r'\b' + re.escape(word) + r'\b', '', normalized, flags=re.IGNORECASE)
-    
-    # Remove special characters except letters, numbers, spaces and underscores
-    normalized = re.sub(r'[^a-zA-Z0-9\s_]', '', normalized.lower())
-    # Replace spaces with underscores
-    normalized = re.sub(r'\s+', '_', normalized.strip())
-    # Remove multiple underscores
-    normalized = re.sub(r'_+', '_', normalized)
-    # Remove leading/trailing underscores
-    normalized = normalized.strip('_')
-    
-    return normalized
-
-class SchemaField(BaseModel):
-    """Model for individual form field schema with field normalization"""
-    label: str
-    value: Optional[str] = ""
-    field_type: str = "text"  # text, number, date, email, phone, etc.
-    required: bool = False
-    description: Optional[str] = None
-    fieldDataVar: Optional[str] = None
-    
-    def __init__(self, **data):
-        super().__init__(**data)
-        # Auto-generate fieldDataVar if not provided
-        if not self.fieldDataVar:
-            self.fieldDataVar = normalize_field_name(self.label)
-
-class DocumentSchema(BaseModel):
-    """Model for complete document schema with metadata"""
-    client_id: str
-    document_title: str
-    document_type: str
-    is_active: bool = True
-    schema_fields: dict[str, SchemaField]
-    created_by: str = "system"
 
 class DynamicPromptGenerator:
     """Generates system prompts dynamically based on extracted fields for video analysis of security/body camera footage"""
@@ -494,6 +403,73 @@ class QwenDocumentIntegrator:
         self._text_cache = {}  # Cache extracted text to avoid re-processing
         self.dynamic_prompt_generator = DynamicPromptGenerator()  # Add prompt generator instance
 
+    def _download_file_from_url(self, url: str) -> str:
+        """
+        Download a file from a URL and return the local file path.
+        Supports Firebase Storage URLs and other document URLs.
+        """
+        try:
+            print(f">>> Downloading document from URL: {url}")
+            
+            # Parse the URL to get a filename
+            parsed_url = urllib.parse.urlparse(url)
+            
+            # Extract filename from URL path or create a default one
+            if parsed_url.path:
+                # Get the last part of the path and decode it
+                path_parts = parsed_url.path.split('/')
+                filename = path_parts[-1] if path_parts else "downloaded_document.pdf"
+                # Remove URL encoding
+                filename = urllib.parse.unquote(filename)
+                # Remove query parameters from filename if they exist
+                filename = filename.split('?')[0]
+                # Clean up any remaining path separators
+                filename = filename.replace('/', '_').replace('\\', '_')
+            else:
+                filename = "downloaded_document.pdf"
+            
+            # Ensure we have a file extension
+            if not filename or '.' not in filename:
+                filename = "downloaded_document.pdf"
+            
+            # Create a temporary file path
+            temp_dir = tempfile.gettempdir()
+            local_file_path = os.path.join(temp_dir, f"doc_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{filename}")
+            
+            # Download the file
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(url, headers=headers, stream=True, timeout=30)
+            response.raise_for_status()
+              # Save the file
+            with open(local_file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            print(f">>> Downloaded document successfully to: {local_file_path}")
+            print(f">>> File size: {os.path.getsize(local_file_path)} bytes")
+            
+            return local_file_path
+            
+        except requests.exceptions.RequestException as e:
+            print(f">>> Error downloading file from URL: {e}")
+            raise HTTPException(status_code=400, detail=f"Failed to download document from URL: {str(e)}")
+        except Exception as e:
+            print(f">>> Unexpected error downloading file: {e}")
+            raise HTTPException(status_code=500, detail=f"Unexpected error downloading document: {str(e)}")
+
+    def _cleanup_temp_file(self, file_path: str):
+        """Clean up temporary downloaded files"""
+        try:
+            if file_path and os.path.exists(file_path) and tempfile.gettempdir() in file_path:
+                os.remove(file_path)
+                print(f">>> Cleaned up temporary file: {file_path}")
+        except Exception as e:
+            print(f">>> Warning: Could not clean up temporary file {file_path}: {e}")
+
     def _setup_gguf_model(self):
         from ctransformers import AutoModelForCausalLM as CTAutoModelForCausalLM
         from ctransformers import AutoTokenizer as CTAutoTokenizer
@@ -733,8 +709,7 @@ class QwenDocumentIntegrator:
         try:
             self._setup_hf_model()
         except Exception as e:
-            print(f">>> Critical error: Failed to load any model: {str(e)}")
-            # Set a flag to bypass model loading in inference
+            print(f">>> Critical error: Failed to load any model: {str(e)}")            # Set a flag to bypass model loading in inference
             self._model_loaded = False
             self.model = None
             self.tokenizer = None
@@ -759,52 +734,39 @@ class QwenDocumentIntegrator:
         gc.collect()
         check_memory()
         
-        inference_task = functools.partial(
-            self.inference, **request_body.model_dump()
-        )
+        # Handle URL downloads if source_url is provided
+        temp_file_path = None
+        original_source_path = request_body.source_path
+        
         try:
-            results = await loop.run_in_executor(executor, inference_task)
-            if results and "error" not in results:
-                db_helper = Db_helper()
-                
-                # Extract data from results for enhanced database storage
-                field_names = results.get("field_names", [])
-                video_processing_prompt = results.get("video_processing_prompt", {})
-                document_schema = results.get("document_schema")
-                generated_system_prompt = results.get("generated_system_prompt")
-                
-                # Only store in database if we have a source_path (file processing)
-                if request_body.source_path:
-                    # Extract additional parameters for enhanced storage
-                    document_type = getattr(request_body, 'document_type', 'form')
-                    client_id = getattr(request_body, 'client_id', 'default')
-                    document_title = getattr(request_body, 'document_title', os.path.basename(request_body.source_path))
-                    
-                    document_id = db_helper.store_document(
-                        document_name=os.path.basename(request_body.source_path),
-                        document_path=request_body.source_path,
-                        field_names=field_names,
-                        video_processing_prompt=video_processing_prompt,
-                        document_schema=document_schema, 
-                        generated_system_prompt=generated_system_prompt,
-                        client_id=client_id,
-                        document_title=document_title,
-                        document_type=document_type,
-                        created_by="system"
-                    )
-                    
-                    if document_id:
-                        results["id"] = document_id
-                else:
-                    # For direct text processing, don't store in database
-                    results["note"] = "Direct text processing - not stored in database"
-
+            if request_body.source_url and not request_body.source_path:
+                # Download file from URL
+                temp_file_path = self._download_file_from_url(request_body.source_url)
+                request_body.source_path = temp_file_path
+                print(f">>> Processing document from URL: {request_body.source_url}")
+                print(f">>> Downloaded to temporary file: {temp_file_path}")
+            elif request_body.source_url and request_body.source_path:
+                raise HTTPException(status_code=400, detail="Please provide either source_path OR source_url, not both")
+            elif not request_body.source_url and not request_body.source_path:
+                raise HTTPException(status_code=400, detail="Either source_path or source_url must be provided")
+            
+            inference_task = functools.partial(
+                self.inference, **request_body.model_dump()
+            )
+              results = await loop.run_in_executor(executor, inference_task)
+            
             return {
-                "status": "success" if "error" not in results else "error",
+                "status": "success" if results and "error" not in results else "error",
                 "results": results,
             }
         except Exception as e:
             return {"error": str(e)}
+        finally:
+            # Clean up temporary file if it was downloaded
+            if temp_file_path:
+                self._cleanup_temp_file(temp_file_path)
+                # Restore original source_path
+                request_body.source_path = original_source_path
 
     def inference(self, source_path=None, document_text=None, system_prompt=None, max_new_tokens=512, **kwargs):
         """
@@ -994,8 +956,7 @@ class QwenDocumentIntegrator:
             r'(\d+)\.\s*([A-Za-z\s]+):',  # 1. Name: (numbered fields)
             r'([A-Za-z\s]+)\s*\(required\)',  # Name (required)
             r'([A-Za-z\s]+)\s*\(optional\)',  # Name (optional)
-            r'^([A-Z\s]+):',  # ALL CAPS FIELD NAMES:
-            r'([A-Za-z\s]+)\s*-{3,}',  # Name ---
+            r'^([A-Z\s]+):',  # ALL CAPS FIELD NAMES:            r'([A-Za-z\s]+)\s*-{3,}',  # Name ---
             r'Please\s+(?:enter|provide|specify)\s+([A-Za-z\s]+)',  # Please enter Name
             r'([A-Za-z\s]+)\s*\(mm/dd/yyyy\)',  # Date (mm/dd/yyyy)
             r'([A-Za-z\s]+)\s*\(dd/mm/yyyy\)',  # Date (dd/mm/yyyy)
@@ -1009,8 +970,15 @@ class QwenDocumentIntegrator:
         for pattern in field_patterns:
             matches = re.findall(pattern, document_text, re.MULTILINE)
             for match in matches:
-                cleaned = match.strip().rstrip(':').strip()
-                  # Filter out common non-field words and improve quality
+                # Handle both string matches and tuple matches from capturing groups
+                if isinstance(match, tuple):
+                    # If match is a tuple, take the first captured group
+                    cleaned = match[0].strip().rstrip(':').strip() if match[0] else ""
+                else:
+                    # If match is a string, use it directly
+                    cleaned = match.strip().rstrip(':').strip()
+                
+                # Filter out common non-field words and improve quality
                 if (len(cleaned) > 2 and len(cleaned) < 50 and 
                     not any(skip_word in cleaned.lower() for skip_word in [
                         'document', 'for', 'use', 'only', 'start', 'end', 'section',
@@ -1345,7 +1313,8 @@ class QwenDocumentIntegrator:
                 return text
             except Exception:
                 return "Error: Could not extract text from PDF"
-        except Exception as e:            return f"Error extracting PDF text: {str(e)}"
+        except Exception as e:
+            return f"Error extracting PDF text: {str(e)}"
 
     def _create_document_schema(self, field_names, field_types, field_descriptions, 
                                document_type="form", client_id="default", 
@@ -1394,16 +1363,16 @@ class QwenDocumentIntegrator:
         """
         if not form_fields or not visual_analysis:
             return form_fields
-        
-        # Load model if not already loaded
+          # Load model if not already loaded
         if not self._model_loaded:
             try:
                 self.load_model()
             except Exception as e:
                 print(f"Failed to load model: {str(e)}")
                 return form_fields
-                
-        try:            # Extract relevant data from visual analysis
+        
+        try:
+            # Extract relevant data from visual analysis
             visual_data = {}
             for analysis in visual_analysis:
                 if 'analysis_data' in analysis and analysis['analysis_data']:
@@ -1427,7 +1396,8 @@ class QwenDocumentIntegrator:
             Please integrate these two data sources, enhancing the form data with relevant information from the visual analysis.
             Return the result as a JSON object.
             """
-              # Generate response
+            
+            # Generate response
             inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
             with torch.no_grad():
                 try:
@@ -1437,7 +1407,8 @@ class QwenDocumentIntegrator:
                         timeout_seconds=60,  # Longer timeout for form integration
                         max_new_tokens=1024,
                         do_sample=True,
-                        temperature=0.7,                        top_p=0.9,
+                        temperature=0.7,
+                        top_p=0.9,
                     )
                 except TimeoutError as e:
                     print(f">>> Form integration generation timed out: {str(e)}")
@@ -1460,7 +1431,7 @@ class QwenDocumentIntegrator:
                 except Exception:
                     pass
                 
-                return form_fields
+            return form_fields
         except Exception as e:
             print(f"Error integrating data: {str(e)}")
             return form_fields
@@ -1487,212 +1458,3 @@ document_integrator = QwenDocumentIntegrator()
 @router.post("/process/")
 async def process_document(request_body: BaseProcessor):
     return await document_integrator.process_document(request_body)
-
-@router.get("/list")
-async def list_documents():
-    """List all processed documents with enhanced schema information"""
-    db_helper = Db_helper()
-    session = db_helper.get_session()
-    if not session:
-        raise HTTPException(status_code=500, detail=DB_CONNECTION_ERROR)
-    
-    try:
-        documents = session.query(FormDocument).all()
-        result = []
-        for doc in documents:
-            # Calculate field count from schema_fields if available, otherwise from field_names
-            field_count = 0
-            normalized_fields = {}
-            
-            if doc.schema_fields:
-                field_count = len(doc.schema_fields)
-                # Extract normalized field names for dashboard integration
-                for field_name, field_data in doc.schema_fields.items():
-                    if isinstance(field_data, dict):
-                        label = field_data.get('label', field_name)
-                        field_data_var = field_data.get('fieldDataVar')
-                        if not field_data_var:
-                            field_data_var = normalize_field_name(label)
-                        normalized_fields[field_name] = {
-                            "label": label,
-                            "fieldDataVar": field_data_var,
-                            "field_type": field_data.get('field_type', 'text'),
-                            "required": field_data.get('required', False)
-                        }
-            elif doc.field_names:
-                field_count = len(doc.field_names)
-                # Create normalized fields from legacy field_names
-                if isinstance(doc.field_names, list):
-                    for field_name in doc.field_names:
-                        normalized_fields[field_name] = {
-                            "label": field_name,
-                            "fieldDataVar": normalize_field_name(field_name),
-                            "field_type": "text",
-                            "required": True
-                        }
-            
-            document_info = {
-                "id": doc.id,
-                "client_id": doc.client_id,
-                "document_title": doc.document_title,
-                "document_type": doc.document_type,
-                "is_active": doc.is_active,
-                "field_count": field_count,
-                "normalized_fields": normalized_fields,  # New field for dashboard integration
-                "has_generated_prompt": bool(doc.generated_system_prompt),
-                "video_path": doc.video_path,
-                "has_video_prompt": bool(doc.video_processing_prompt),
-                "created_by": doc.created_by,
-                "created_on": doc.created_on.isoformat() if doc.created_on else None,
-                "processed_date": doc.processed_date.isoformat() if doc.processed_date else None,
-                # Keep legacy field for backward compatibility
-                "document_name": doc.document_title or "Unknown Document"
-            }
-            result.append(document_info)
-        return JSONResponse(content={"documents": result})
-    finally:
-        session.close()
-
-@router.get("/{document_id}")
-async def get_document(document_id: int):
-    """Get a specific document by ID with enhanced schema information"""
-    db_helper = Db_helper()
-    session = db_helper.get_session()
-    if not session:
-        raise HTTPException(status_code=500, detail=DB_CONNECTION_ERROR)
-    
-    try:
-        document = session.query(FormDocument).filter(FormDocument.id == document_id).first()
-        
-        if not document:
-            raise HTTPException(status_code=404, detail=DOC_NOT_FOUND_ERROR)
-        
-        # Process normalized fields for dashboard integration
-        normalized_fields = {}
-        if document.schema_fields:
-            for field_name, field_data in document.schema_fields.items():
-                if isinstance(field_data, dict):
-                    label = field_data.get('label', field_name)
-                    field_data_var = field_data.get('fieldDataVar')
-                    if not field_data_var:
-                        field_data_var = normalize_field_name(label)
-                    normalized_fields[field_name] = {
-                        "label": label,
-                        "fieldDataVar": field_data_var,
-                        "field_type": field_data.get('field_type', 'text'),
-                        "required": field_data.get('required', False),
-                        "description": field_data.get('description', ''),
-                        "value": field_data.get('value', '')
-                    }
-        elif document.field_names:
-            # Create normalized fields from legacy field_names
-            if isinstance(document.field_names, list):
-                for field_name in document.field_names:
-                    normalized_fields[field_name] = {
-                        "label": field_name,
-                        "fieldDataVar": normalize_field_name(field_name),
-                        "field_type": "text",
-                        "required": True,
-                        "description": "",
-                        "value": ""
-                    }
-        
-        result = {
-            "id": document.id,
-            "client_id": document.client_id,
-            "document_title": document.document_title,
-            "document_type": document.document_type,
-            "is_active": document.is_active,
-            "schema_fields": document.schema_fields,
-            "normalized_fields": normalized_fields,  # New field for dashboard integration
-            "generated_system_prompt": document.generated_system_prompt,
-            "video_processing_prompt": document.video_processing_prompt,
-            "document_path": document.document_path,
-            "video_path": document.video_path,
-            "source_path": document.source_path,
-            "created_by": document.created_by,
-            "created_on": document.created_on.isoformat() if document.created_on else None,
-            "processed_date": document.processed_date.isoformat() if document.processed_date else None,
-            # Keep legacy fields for backward compatibility
-            "field_names": document.field_names,
-            "document_name": document.document_title or "Unknown Document"
-        }
-        return JSONResponse(content=result)
-    finally:
-        session.close()
-
-@router.post("/{document_id}/integrate")
-async def integrate_document_with_analysis(document_id: int):
-    """Integrate document form fields with video analysis data"""
-    debug_info = {}
-    db_helper = Db_helper()
-    session = db_helper.get_session()
-    if not session:
-        return {"error": DB_CONNECTION_ERROR}
-
-    try:
-        # Get form document
-        form_document = session.query(FormDocument).filter(FormDocument.id == document_id).first()
-        if not form_document:
-            return {"error": DOC_NOT_FOUND_ERROR}
-              # Get form fields - prioritize schema_fields, fallback to field_names for backward compatibility
-        form_fields = None
-        if form_document.schema_fields:
-            # Extract field names from schema_fields structure
-            form_fields = list(form_document.schema_fields.keys())
-            debug_info["form_fields_source"] = "schema_fields"
-        elif form_document.field_names:
-            form_fields = form_document.field_names
-            debug_info["form_fields_source"] = "field_names"
-        
-        debug_info["form_fields_count"] = len(form_fields) if form_fields else 0
-        
-        # Get video path
-        video_path = form_document.video_path
-        debug_info["video_path"] = video_path
-        
-        if not video_path:
-            return {"error": NO_VIDEO_ERROR}
-            
-        # Get video analysis data
-        conn = psycopg2.connect(**DB_CONFIG)
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, analysis_data FROM video_analysis WHERE source_path = %s ORDER BY id DESC",
-                (video_path,)
-            )
-            
-            rows = cursor.fetchall()
-            visual_analysis = [{"id": row[0], "analysis_data": row[1]} for row in rows]
-            debug_info["visual_analysis_count"] = len(visual_analysis)
-            
-            if not visual_analysis:
-                return {"error": NO_ANALYSIS_ERROR}
-                  # Integrate form fields with visual analysis data
-            updated_fields = document_integrator.integrate_form_with_analysis(form_fields, visual_analysis)
-            
-            # Update document - prioritize updating schema_fields structure if it exists
-            if form_document.schema_fields:
-                # Update schema_fields with integrated data
-                for field_name in updated_fields:
-                    if field_name in form_document.schema_fields:
-                        # Update existing field in schema_fields
-                        form_document.schema_fields[field_name]["value"] = updated_fields[field_name]
-                form_document.schema_fields = form_document.schema_fields.copy()
-            form_document.field_names = updated_fields
-            session.commit()
-            
-            return {
-                "message": "Document integrated with visual analysis data",
-                "document_id": document_id,
-                "fields": updated_fields,
-                "debug_info": debug_info
-            }
-        finally:
-            cursor.close()
-            conn.close()
-    except Exception as e:
-        return {"error": str(e), "debug_info": debug_info}
-    finally:
-        session.close()
