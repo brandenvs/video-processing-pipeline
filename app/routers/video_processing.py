@@ -1,6 +1,10 @@
 import csv
 import json
 import os
+import uuid
+import aiofiles
+import aiohttp
+import atexit
 from pathlib import Path
 import re
 import shutil
@@ -8,7 +12,7 @@ import tempfile
 import time
 from typing import Optional
 import concurrent
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 import torch
 import gc
 import asyncio
@@ -28,7 +32,7 @@ from qwen_vl_utils import process_vision_info
 
 from routers import model_management as mm
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, UploadFile
 
 
 from concurrent.futures import ThreadPoolExecutor
@@ -40,12 +44,11 @@ from moviepy import VideoFileClip
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-
 class BaseProcessor(BaseModel):
     system_prompt: Optional[str] = "Identify key data and fillout the given system schema"
     max_tokens: Optional[int] = 512
     model_id: Optional[str] = "qwen/Qwen2.5-VL-3B-Instruct"
-    source_path: str
+    video_url: HttpUrl
 
 router = APIRouter()
 
@@ -57,33 +60,84 @@ router = APIRouter(
 
 executor = ThreadPoolExecutor(max_workers=4)
 
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
 
 def cleanup_executor():
     executor.shutdown(wait=True)
 
-
 atexit.register(cleanup_executor)
 
-
 def check_memory(device=mm.get_torch_device):
-    print("Device Loaded: ", device)
+  print("Device Loaded: ", device)
 
-    total_mem = mm.get_total_memory(device) / (1024 * 1024 * 1024)
-    print(f"GPU has {total_mem} GBs")
+  total_mem = mm.get_total_memory(device) / (1024 * 1024 * 1024)
+  print(f"GPU has {total_mem} GBs")
 
-    free_mem_gb = mm.get_free_memory(device) / (1024 * 1024 * 1024)
-    print(f"GPU memory checked: {free_mem_gb:.2f}GB available.")
-    return (free_mem_gb, total_mem)
+  free_mem_gb = mm.get_free_memory(device) / (1024 * 1024 * 1024)
+  print(f"GPU memory checked: {free_mem_gb:.2f}GB available.")
+  return (free_mem_gb, total_mem)
 
+async def download_video_from_url(url: str, filename: str) -> str:
+  file_path = UPLOAD_DIR / filename
+  
+  async with aiohttp.ClientSession() as session:
+      try:
+          async with session.get(str(url)) as response:
+              if response.status != 200:
+                  raise HTTPException(status_code=400, detail=f"Failed to download video: {response.status}")
+              
+              # Check content type
+              content_type = response.headers.get('content-type', '')
+              if not content_type.startswith('video/'):
+                  raise HTTPException(status_code=400, detail="URL does not point to a video file")
+              
+              # Write file
+              async with aiofiles.open(file_path, 'wb') as f:
+                  async for chunk in response.content.iter_chunked(8192):
+                      await f.write(chunk)
+                      
+      except aiohttp.ClientError as e:
+          raise HTTPException(status_code=400, detail=f"Failed to download video: {str(e)}")
+  
+  return str(file_path)
 
+async def save_uploaded_file(upload_file: UploadFile) -> str:
+  file_extension = Path(upload_file.filename).suffix
+  unique_filename = f"{uuid.uuid4()}{file_extension}"
+  file_path = UPLOAD_DIR / unique_filename
+  
+  # Validate file type
+  if not upload_file.content_type.startswith('video/'):
+      raise HTTPException(status_code=400, detail="File must be a video")
+  
+  # Save file
+  async with aiofiles.open(file_path, 'wb') as f:
+      content = await upload_file.read()
+      await f.write(content)
+  
+  return str(file_path)
+
+def cleanup_video_file(file_path: str):
+  try:
+      if os.path.exists(file_path):
+          os.remove(file_path)
+          print(f"Cleaned up video file: {file_path}")
+  except Exception as e:
+      print(f"Error cleaning up video file {file_path}: {e}")
+      
 @router.post("/process/")
 async def process_video(request_body: BaseProcessor):  
     loop = asyncio.get_running_loop()
     torch.cuda.empty_cache()
     gc.collect()
     check_memory()
-
-    scene_detection = functools.partial(batch_scene_detect, request_body.source_path)
+    
+    url_path = Path(request_body.video_url.path)
+    filename = f"{uuid.uuid4()}{url_path.suffix or '.mp4'}"
+    
+    source_path = await download_video_from_url(str(request_body.video_url), filename)
+    scene_detection = functools.partial(batch_scene_detect, source_path)    
     scene_detection_response = await loop.run_in_executor(executor, scene_detection)
     
     infer_obj = {
@@ -100,27 +154,13 @@ async def process_video(request_body: BaseProcessor):
     # Cleanup for next video ...
     [os.remove(os.path.join('segments', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
     [os.remove(os.path.join('audio', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
+    [os.remove(os.path.join('uploads', f)) for f in os.listdir('uploads') if os.path.isfile(os.path.join('uploads', f))]
     
-    # for analysis_data in results:
-    #     analysis_ids = []
-
-    #     # Store in database
-    #     db_helper = Db_helper()
-    #     analysis_id = db_helper.video_analysis(
-    #         analysis_data, source_path=request_body.source_path
-    #     )
-
-    #     if analysis_id:
-    #         # analysis_data['id'] = analysis_id
-    #         analysis_ids.append(analysis_id)
-
     return {
         "status": "success",
         "scene_detection_response": scene_detection_response,
         "processed_video_response": processed_video_response
-        # "analysis_ids": analysis_ids,
     }
-
 
 def get_mean_content_val(stats_file: str) -> float:
     content_vals = []
@@ -131,7 +171,6 @@ def get_mean_content_val(stats_file: str) -> float:
             content_vals.append(float(row['content_val']))
     
     return sum(content_vals) / len(content_vals)
-
 
 def get_content_val(stats_file: str) -> dict:
     content_vals = []
@@ -159,7 +198,6 @@ def get_content_val(stats_file: str) -> dict:
         'p75': content_vals[3 * n // 4],
         'p90': content_vals[int(0.9 * n)]
     }
-
 
 def batch_scene_detect(video):
     stats_scene = []
@@ -440,6 +478,4 @@ class Qwen2_VQA:
         }
         return response
 
-
 model_manager = Qwen2_VQA()
-
