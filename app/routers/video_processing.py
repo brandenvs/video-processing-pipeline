@@ -66,7 +66,7 @@ def cleanup_executor():
 atexit.register(cleanup_executor)
 
 
-def check_memory(device=mm.get_torch_device):
+def check_memory(device=mm.get_torch_device()):
     print("Device Loaded: ", device)
     result = mm.get_total_memory(device)
 
@@ -405,7 +405,7 @@ class Qwen2_VQA:
         system_prompts = self.processor.apply_chat_template( # type: ignore
             messages, tokenize=False, add_generation_prompt=True
         )
-        image_inputs, video_inputs = process_vision_info(messages)
+        video_inputs, image_inputs = process_vision_info(messages) # type: ignore
 
         check_memory(self.device)
 
