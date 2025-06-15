@@ -3,8 +3,6 @@ import datetime
 import json
 import os
 import uuid
-import aiofiles
-import aiohttp
 import atexit
 from pathlib import Path
 import re
@@ -81,54 +79,6 @@ def check_memory(device=mm.get_torch_device):
   print(f"GPU memory checked: {free_mem_gb:.2f}GB available.")
   return (free_mem_gb, total_mem)
 
-async def download_video_from_url(url: str, filename: str) -> str:
-  file_path = UPLOAD_DIR / filename
-  
-  async with aiohttp.ClientSession() as session:
-      try:
-          async with session.get(str(url)) as response:
-              if response.status != 200:
-                  raise HTTPException(status_code=400, detail=f"Failed to download video: {response.status}")
-              
-              # Check content type
-              content_type = response.headers.get('content-type', '')
-              if not content_type.startswith('video/'):
-                  raise HTTPException(status_code=400, detail="URL does not point to a video file")
-              
-              # Write file
-              async with aiofiles.open(file_path, 'wb') as f:
-                  async for chunk in response.content.iter_chunked(8192):
-                      await f.write(chunk)
-                      
-      except aiohttp.ClientError as e:
-          raise HTTPException(status_code=400, detail=f"Failed to download video: {str(e)}")
-  
-  return str(file_path)
-
-async def save_uploaded_file(upload_file: UploadFile) -> str:
-  file_extension = Path(upload_file.filename).suffix
-  unique_filename = f"{uuid.uuid4()}{file_extension}"
-  file_path = UPLOAD_DIR / unique_filename
-  
-  # Validate file type
-  if not upload_file.content_type.startswith('video/'):
-      raise HTTPException(status_code=400, detail="File must be a video")
-  
-  # Save file
-  async with aiofiles.open(file_path, 'wb') as f:
-      content = await upload_file.read()
-      await f.write(content)
-  
-  return str(file_path)
-
-def cleanup_video_file(file_path: str):
-  try:
-      if os.path.exists(file_path):
-          os.remove(file_path)
-          print(f"Cleaned up video file: {file_path}")
-  except Exception as e:
-      print(f"Error cleaning up video file {file_path}: {e}")
-      
 @router.post("/process/")
 async def process_video(request_body: BaseProcessor):  
   loop = asyncio.get_running_loop()
@@ -470,3 +420,4 @@ class Qwen2_VQA:
     }
     return response
 
+model_manager = Qwen2_VQA()
