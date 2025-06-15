@@ -20,7 +20,10 @@ from typing import Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-from app.routers import model_management as mm
+# Import the DB configuration from the original project
+from routers.database_service import DB_CONFIG, Db_helper
+
+from routers import model_management as mm
 
 
 def normalize_field_name(field_name: str) -> str:
