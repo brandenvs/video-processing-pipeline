@@ -210,12 +210,12 @@ def batch_scene_detect(video):
 
 class Qwen2_VQA:
   def __init__(self):
-      self.model_checkpoint = None
-      self.processor = None
-      self.model = None
-      self.device = mm.get_torch_device()
-      self.dtype = None
-      self._model_loaded = False
+    self.model_checkpoint = None
+    self.processor = None
+    self.model = None
+    self.device = mm.get_torch_device()
+    self.dtype = None
+    self._model_loaded = False
 
   def process_generated_response(self, generated_response: str, sequence_no: int):
     if generated_response.startswith("```json"):
@@ -263,10 +263,10 @@ class Qwen2_VQA:
 
     if self.dtype != torch.float16:
       quantization_config = BitsAndBytesConfig(
-          load_in_4bit=True,
-          bnb_4bit_compute_dtype=self.dtype,
-          bnb_4bit_use_double_quant=True,
-          bnb_4bit_quant_type="nf4",
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=self.dtype,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
       )
     else:
       quantization_config = None
@@ -353,23 +353,23 @@ class Qwen2_VQA:
 
     messages = [
       {
-          "role": "system",
-          "content": """You are an expert visual analysis system.
-          Analyze the video and structure a concise JSON response structured as follows.
+        "role": "system",
+        "content": """You are an expert visual analysis system.
+        Analyze the video and structure a concise JSON response structured as follows.
 
-          Frame activity - A concise description of is happening within the video.
-          Objects detected - A list of objects identified within a close proximity.
-          Cars detected - A list of JSON objects with the following properties: Car license plate(if visible), Color and Model.
-          People detected - A list of JSON objects with the following properties: Estimated Height, Age, Race, Emotional state, and proximity
-          Scene sentiment - Either 'neutral', 'dangerous' or 'unknown'.
-          ID cards detected - A list of JSON objects with the following properties: Surname, Names, Sex, Nationality, Identity Number, Date of Birth, Country of Birth, Status""",
+        Frame activity - A concise description of is happening within the video.
+        Objects detected - A list of objects identified within a close proximity.
+        Cars detected - A list of JSON objects with the following properties: Car license plate(if visible), Color and Model.
+        People detected - A list of JSON objects with the following properties: Estimated Height, Age, Race, Emotional state, and proximity
+        Scene sentiment - Either 'neutral', 'dangerous' or 'unknown'.
+        ID cards detected - A list of JSON objects with the following properties: Surname, Names, Sex, Nationality, Identity Number, Date of Birth, Country of Birth, Status""",
       },
       {
-          "role": "user",
-          "content": [
-              {"type": "video", "video": segment_path},
-              {"type": "text", "text": system_prompt},
-          ],
+        "role": "user",
+        "content": [
+          {"type": "video", "video": segment_path},
+          {"type": "text", "text": system_prompt},
+        ],
       },
     ]
 
