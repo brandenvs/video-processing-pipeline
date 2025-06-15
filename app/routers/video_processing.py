@@ -1,4 +1,5 @@
 import csv
+import datetime
 import json
 import os
 import uuid
@@ -12,13 +13,15 @@ import tempfile
 import time
 from typing import Optional
 import concurrent
-from pydantic import BaseModel, HttpUrl
+import uuid
+from pydantic import BaseModel
 import torch
 import gc
 import asyncio
 from torch.nn.attention import SDPBackend, sdpa_kernel
+import urllib
 from routers.database_service import Db_helper
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig # type: ignore
 import tempfile
 
 import subprocess
@@ -45,17 +48,17 @@ from moviepy import VideoFileClip
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 class BaseProcessor(BaseModel):
-    system_prompt: Optional[str] = "Identify key data and fillout the given system schema"
-    max_tokens: Optional[int] = 512
-    model_id: Optional[str] = "qwen/Qwen2.5-VL-3B-Instruct"
-    video_url: HttpUrl
+  system_prompt: Optional[str] = "Identify key data and fillout the given system schema"
+  max_tokens: Optional[int] = 512
+  model_id: Optional[str] = "qwen/Qwen2.5-VL-3B-Instruct"
+  source_path: str
 
 router = APIRouter()
 
 router = APIRouter(
-    prefix="/process",
-    tags=["process"],
-    responses={404: {"description": "Not found"}},
+  prefix="/process",
+  tags=["process"],
+  responses={404: {"description": "Not found"}},
 )
 
 executor = ThreadPoolExecutor(max_workers=4)
@@ -64,7 +67,7 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 def cleanup_executor():
-    executor.shutdown(wait=True)
+  executor.shutdown(wait=True)
 
 atexit.register(cleanup_executor)
 
@@ -128,354 +131,342 @@ def cleanup_video_file(file_path: str):
       
 @router.post("/process/")
 async def process_video(request_body: BaseProcessor):  
-    loop = asyncio.get_running_loop()
-    torch.cuda.empty_cache()
-    gc.collect()
-    check_memory()
-    
-    url_path = Path(request_body.video_url.path)
-    filename = f"{uuid.uuid4()}{url_path.suffix or '.mp4'}"
-    
-    source_path = await download_video_from_url(str(request_body.video_url), filename)
-    scene_detection = functools.partial(batch_scene_detect, source_path)    
-    scene_detection_response = await loop.run_in_executor(executor, scene_detection)
-    
-    infer_obj = {
-        'model_id': request_body.model_id,
-        'system_prompt': request_body.system_prompt,
-        'max_tokens': request_body.max_tokens,
-        'segments': scene_detection_response['segments'],
-        'stats_scene': scene_detection_response['stats_scene']
-    }
-    print(infer_obj)
-    process_video = functools.partial(model_manager.inference_helper, **infer_obj)
-    processed_video_response = await loop.run_in_executor(executor, process_video)
-    
-    # Cleanup for next video ...
-    [os.remove(os.path.join('segments', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
-    [os.remove(os.path.join('audio', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
-    [os.remove(os.path.join('uploads', f)) for f in os.listdir('uploads') if os.path.isfile(os.path.join('uploads', f))]
-    
-    return {
-        "status": "success",
-        "scene_detection_response": scene_detection_response,
-        "processed_video_response": processed_video_response
-    }
+  loop = asyncio.get_running_loop()
+  torch.cuda.empty_cache()
+  gc.collect()
+  check_memory()
 
+  timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+  filename = f'/home/ubuntu/adp-video-pipeline/source_data/{uuid.uuid4()}video.mp4'
+  print(request_body)
+  result = urllib.request.urlretrieve(request_body.source_path, filename)
+  print(result)
+
+  if (result):
+    scene_detection = functools.partial(batch_scene_detect, filename)
+    scene_detection_response = await loop.run_in_executor(executor, scene_detection)
+  
+  infer_obj = {
+    'model_id': request_body.model_id,
+    'system_prompt': request_body.system_prompt,
+    'max_tokens': request_body.max_tokens,
+    'segments': scene_detection_response['segments'],
+    'stats_scene': scene_detection_response['stats_scene']
+  }
+  print(infer_obj)
+  process_video = functools.partial(model_manager.inference_helper, **infer_obj)
+  processed_video_response = await loop.run_in_executor(executor, process_video)
+  
+  # Cleanup for next video ...
+  [os.remove(os.path.join('segments', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
+  [os.remove(os.path.join('audio', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
+  
+  # for analysis_data in results:
+  #     analysis_ids = []
+
+  #     # Store in database
+  #     db_helper = Db_helper()
+  #     analysis_id = db_helper.video_analysis(
+  #         analysis_data, source_path=request_body.source_path
+  #     )
+
+  #     if analysis_id:
+  #         # analysis_data['id'] = analysis_id
+  #         analysis_ids.append(analysis_id)
+
+  return {
+    "status": "success",
+    "scene_detection_response": scene_detection_response,
+    "processed_video_response": processed_video_response
+    # "analysis_ids": analysis_ids,
+  }
+
+#
 def get_mean_content_val(stats_file: str) -> float:
-    content_vals = []
-    
-    with open(f'segments/{stats_file}', 'r') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            content_vals.append(float(row['content_val']))
-    
-    return sum(content_vals) / len(content_vals)
+  content_vals = []
+  
+  with open(f'segments/{stats_file}', 'r') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+      content_vals.append(float(row['content_val']))
+  
+  return sum(content_vals) / len(content_vals)
 
 def get_content_val(stats_file: str) -> dict:
-    content_vals = []
-    
-    with open(stats_file, 'r') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            content_vals.append(float(row['content_val']))
-    
-    content_vals.sort()
-    n = len(content_vals)
-    
-    mean_val = sum(content_vals) / n
-    median_val = content_vals[n // 2] if n % 2 == 1 else (content_vals[n // 2 - 1] + content_vals[n // 2]) / 2
-    variance = sum((x - mean_val) ** 2 for x in content_vals) / n
-    
-    return {
-        'count': n,
-        'min': min(content_vals),
-        'max': max(content_vals),
-        'mean': mean_val,
-        'median': median_val,
-        'std': variance ** 0.5,
-        'p25': content_vals[n // 4],
-        'p75': content_vals[3 * n // 4],
-        'p90': content_vals[int(0.9 * n)]
-    }
+  content_vals = []
+  
+  with open(stats_file, 'r') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+      content_vals.append(float(row['content_val']))
+  
+  content_vals.sort()
+  n = len(content_vals)
+  
+  mean_val = sum(content_vals) / n
+  median_val = content_vals[n // 2] if n % 2 == 1 else (content_vals[n // 2 - 1] + content_vals[n // 2]) / 2
+  variance = sum((x - mean_val) ** 2 for x in content_vals) / n
+  
+  return {
+    'count': n,
+    'min': min(content_vals),
+    'max': max(content_vals),
+    'mean': mean_val,
+    'median': median_val,
+    'std': variance ** 0.5,
+    'p25': content_vals[n // 4],
+    'p75': content_vals[3 * n // 4],
+    'p90': content_vals[int(0.9 * n)]
+  }
 
 def batch_scene_detect(video):
-    stats_scene = []
+  stats_scene = []
     
-    # TODO Black box - splits
-    response = subprocess.run([
-        'scenedetect', '--config', 'scenedetect.cfg',
-        '-i', video,
-        '--output', 'segments',
-        'detect-content', 'split-video', '--filename', '$SCENE_NUMBER', '--copy'
-    ], check=True, capture_output=True, text=True)
-    segments = [f for f in os.listdir('segments') if f.endswith('.mp4')]
+  # TODO Black box - splits
+  response = subprocess.run([
+    'scenedetect', '--config', 'scenedetect.cfg',
+    '-i', video,
+    '--output', 'segments',
+    'detect-content', 'split-video', '--filename', '$SCENE_NUMBER', '--copy'
+  ], check=True, capture_output=True, text=True)
+  segments = [f for f in os.listdir('segments') if f.endswith('.mp4')]
 
-    for segment in segments:
-        stats = f'{segment}_stats.csv'
-        scene = f'{segment}_scene.csv'
-        stats_obj = {
-            'stats': stats,
-            'scene': scene
-        }
-        stats_scene.append(stats_obj)        
-
-        # TODO Black box - Gets stats on segment
-        response = subprocess.run([
-            'scenedetect', '--config', 'scenedetect.cfg',
-            '-i', f'segments/{segment}',
-            '--output', 'segments',
-            '--stats', stats,
-            'detect-content', 
-            'list-scenes', '-f', scene,
-            'split-video', '--filename', '$SCENE_NUMBER', '--copy'
-        ], check=True, capture_output=True, text=True)
-        
-        mean_content_val = get_mean_content_val(stats)
-    
-        content_threshold = 15
-        if mean_content_val < content_threshold:
-            _ = segments.pop(segments.index(segment))
-
-    response = {  
-        'segments': segments,
-        'stats_scene': stats_scene,
-        "mean_content_val": round(mean_content_val, 3)
+  for segment in segments:
+    stats = f'{segment}_stats.csv'
+    scene = f'{segment}_scene.csv'
+    stats_obj = {
+        'stats': stats,
+        'scene': scene
     }
-    print(json.dumps(response, indent=2))
-    return response
+    stats_scene.append(stats_obj)        
+
+    # TODO Black box - Gets stats on segment
+    response = subprocess.run([
+      'scenedetect', '--config', 'scenedetect.cfg',
+      '-i', f'segments/{segment}',
+      '--output', 'segments',
+      '--stats', stats,
+      'detect-content', 
+      'list-scenes', '-f', scene,
+      'split-video', '--filename', '$SCENE_NUMBER', '--copy'
+    ], check=True, capture_output=True, text=True)
+    
+    mean_content_val = get_mean_content_val(stats)
+
+    content_threshold = 15
+    if mean_content_val < content_threshold:
+      _ = segments.pop(segments.index(segment))
+
+  response = {  
+    'segments': segments,
+    'stats_scene': stats_scene,
+    "mean_content_val": round(mean_content_val, 3)
+  }
+  print(json.dumps(response, indent=2))
+  return response
 
 class Qwen2_VQA:
-    def __init__(self):
-        self.model_checkpoint = None
-        self.processor = None
-        self.model = None
-        self.device = mm.get_torch_device()
-        self.dtype = None
-        self._model_loaded = False
+  def __init__(self):
+    self.model_checkpoint = None
+    self.processor = None
+    self.model = None
+    self.device = mm.get_torch_device()
+    self.dtype = None
+    self._model_loaded = False
 
-    def process_generated_response(self, generated_response: str, sequence_no: int):
-        if generated_response.startswith("```json"):
-            try:
-                lines = generated_response.strip().splitlines()
-                json_content = "\n".join(lines[1:-1])
+  def process_generated_response(self, generated_response: str, sequence_no: int):
+    if generated_response.startswith("```json"):
+      try:
+        lines = generated_response.strip().splitlines()
+        json_content = "\n".join(lines[1:-1])
 
-                json_response = json.loads(json_content)
-                spread_response = {**json_response, **{"sequence_no": sequence_no}}
-                return spread_response
+        json_response = json.loads(json_content)
+        spread_response = {**json_response, **{"sequence_no": sequence_no}}
+        return spread_response
 
-            except json.JSONDecodeError as e:
-                print(f"JSON decode error: {e}")
-                return e
+      except json.JSONDecodeError as e:
+        print(f"JSON decode error: {e}")
+        return e
 
-        return generated_response
+    return generated_response
 
-    def load_model(self, model_id: str):
-        if self._model_loaded:
-            return
+  def load_model(self, model_id: str):
+    if self._model_loaded:
+      return
 
-        torch.cuda.empty_cache()
-        print(gc.collect())
-        check_memory()
-        torch.manual_seed(42)
+    torch.cuda.empty_cache()
+    print(gc.collect())
+    check_memory()
+    torch.manual_seed(42)
 
-        self.model_checkpoint = os.path.join(
-            "models/prompt_generator", os.path.basename(model_id)
-        )
+    self.model_checkpoint = os.path.join(
+        "models/prompt_generator", os.path.basename(model_id)
+    )
 
-        if not os.path.exists(self.model_checkpoint):
-            from huggingface_hub import snapshot_download
+    if not os.path.exists(self.model_checkpoint):
+      from huggingface_hub import snapshot_download
 
-            snapshot_download(repo_id=model_id, local_dir=self.model_checkpoint)
+      snapshot_download(repo_id=model_id, local_dir=self.model_checkpoint)
 
-        # MARK: Precision
-        if mm.should_use_fp16(self.device):
-            self.dtype = torch.float16
-        elif mm.should_use_fp16(self.device):
-            self.dtype = torch.float16
-        else:
-            torch.float32
+    # MARK: Precision
+    if mm.should_use_fp16(self.device):
+      self.dtype = torch.float16
+    elif mm.should_use_fp16(self.device):
+      self.dtype = torch.float16
+    else:
+      torch.float32
 
-        print(f'>>> Selected DType: {self.dtype}')
+    print(f'>>> Selected DType: {self.dtype}')
 
-        if self.dtype != torch.float16:
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=self.dtype,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-            )
-        else:
-            quantization_config = None
+    if self.dtype != torch.float16:
+      quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=self.dtype,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+      )
+    else:
+      quantization_config = None
 
-        # Get architecture details if CUDA is available
-        if torch.cuda.is_available():
-            device_index = torch.cuda.current_device()
-            device_name = torch.cuda.get_device_name(device_index)
-            capability = torch.cuda.get_device_capability(device_index)
-            print(f'>>> CUDA Device: {device_name}')
-            print(f'>>> Compute Capability: {capability[0]}.{capability[1]}')
+    # Get architecture details if CUDA is available
+    if torch.cuda.is_available():
+      device_index = torch.cuda.current_device()
+      device_name = torch.cuda.get_device_name(device_index)
+      capability = torch.cuda.get_device_capability(device_index)
+      print(f'>>> CUDA Device: {device_name}')
+      print(f'>>> Compute Capability: {capability[0]}.{capability[1]}')
 
-            # Classify architecture
-            major = capability[0]
-            if major >= 8:
-                print(">>> Architecture: Ampere or newer (FlashAttention-compatible)")
-            elif major == 7:
-                print(">>> Architecture: Turing or Volta (not compatible with FlashAttention)")
-            else:
-                print(">>> Architecture: Older (not compatible)")
+      # Classify architecture
+      major = capability[0]
+      if major >= 8:
+        print(">>> Architecture: Ampere or newer (FlashAttention-compatible)")
+      elif major == 7:
+        print(">>> Architecture: Turing or Volta (not compatible with FlashAttention)")
+      else:
+        print(">>> Architecture: Older (not compatible)")
 
-        else:
-            print(">>> CUDA not available")
+    else:
+      print(">>> CUDA not available")
     
-        print(f'>>> Selected Device: {self.device}')
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            self.model_checkpoint,
-            torch_dtype=self.dtype,
-            attn_implementation="flash_attention_2",
-            device_map=self.device,
-            quantization_config=quantization_config,
-        )
+    print(f'>>> Selected Device: {self.device}')
+    self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+      self.model_checkpoint,
+      torch_dtype=self.dtype,
+      attn_implementation="flash_attention_2",
+      device_map=self.device,
+      quantization_config=quantization_config,
+    )
 
-        self.processor = AutoProcessor.from_pretrained(
-            self.model_checkpoint,
-            min_pixels = 256*28*28,
-            max_pixels = 1280*28*28,
-        )
+    self.processor = AutoProcessor.from_pretrained(
+      self.model_checkpoint,
+      min_pixels = 256*28*28,
+      max_pixels = 1280*28*28,
+    )
 
-        self._model_loaded = True
+    self._model_loaded = True
 
-    def inference_helper(self, model_id: str, system_prompt: str, max_tokens: int, segments: list, stats_scene: list):
-        responses = []
+  def inference_helper(self, model_id: str, system_prompt: str, max_tokens: int, segments: list, stats_scene: list):
+    responses = []
         
-        if not self._model_loaded:
-            print('>>> Loading model into memory')
-            self.load_model(model_id)
+    if not self._model_loaded:
+      print('>>> Loading model into memory')
+      self.load_model(model_id)
 
-        segments.sort(key=lambda x: int(x[:3]), reverse=False)
-        stats_scene.sort(key=lambda x: int(x['stats'].split('.')[0]))     # segments.sort(reverse=True)
+    segments.sort(key=lambda x: int(x[:3]), reverse=False)
+    stats_scene.sort(key=lambda x: int(x['stats'].split('.')[0]))     # segments.sort(reverse=True)
 
-        for seq, segment in enumerate(segments):
-            segment_path = os.path.join('segments', segment)
+    for seq, segment in enumerate(segments):
+      segment_path = os.path.join('segments', segment)
 
-            # TODO Black box (strips audio) / no alternative really ...
-            with tempfile.TemporaryDirectory(dir='tmp') as temp_dir:
-                temp_path = os.path.join(temp_dir, segment)
-                
-                subprocess.run([
-                    'ffmpeg', '-y', '-i', segment_path,
-                    '-r', '5', '-c:v', 'libx264', '-crf', '23',
-                    '-an',
-                    temp_path,
-                    '-vn', '-c:a', 'aac',
-                    f'audio/{segment}.aac'
-                ], capture_output=True, text=True)                
-                shutil.move(temp_path, segment_path)
-
-            with open(f'segments/{stats_scene[seq]["scene"]}', 'r') as f:
-                reader = csv.DictReader(f)
-                # NOTE THIS DOES NOT WORK !!!
-                for idx, row in enumerate(reader):
-                    if idx > 0:
-                        for val in row.values():
-                            if isinstance(val, list):
-                                batch_length = float(val[-1])
-                                print(batch_length)
+        # TODO Black box (strips audio) / no alternative really ...
+      with tempfile.TemporaryDirectory(dir='tmp') as temp_dir:
+        temp_path = os.path.join(temp_dir, segment)
         
-            responses.append(self.inference(segment_path, system_prompt, max_tokens, seq, batch_length))
+        subprocess.run([
+          'ffmpeg', '-y', '-i', segment_path,
+          '-r', '5', '-c:v', 'libx264', '-crf', '23',
+          '-an',
+          temp_path,
+          '-vn', '-c:a', 'aac',
+          f'audio/{segment}.aac'
+        ], capture_output=True, text=True)                
+        shutil.move(temp_path, segment_path)
 
-        print(responses)
-        return responses
+      with open(f'segments/{stats_scene[seq]["scene"]}', 'r') as f:
+        reader = csv.DictReader(f)
+        # NOTE THIS DOES NOT WORK !!!
+        for idx, row in enumerate(reader):
+          if idx > 0:
+            for val in row.values():
+              if isinstance(val, list):
+                batch_length = float(val[-1])
+                print(batch_length)
+      responses.append(self.inference(segment_path, system_prompt, max_tokens, seq, batch_length))
+    print(responses)
+    return responses
 
-    def inference(self, segment_path: str, system_prompt: str, max_tokens: int, seq: int, batch_length: float):
-        start_time = time.time() # timer
+  def inference(self, segment_path: str, system_prompt: str, max_tokens: int, seq: int, batch_length: str):
+    start_time = time.time() # timer
 
-        # MARK: Batching (ref)
-        # for start in range(0, int(video_duration), batch):
-        #     end = min(start + batch, video_duration)
-        #     segments.append((start, end))
-        
-        # with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        #     print('>>> Processing segments')
-        #     video_to_batches = {
-        #         executor.submit(self.process_batch, 
-        #             start, end, source_path, idx):
-        #             idx for idx, (start, end) in enumerate(segments)
-        #     }
+    messages = [
+      {
+        "role": "system",
+        "content": """You are an expert visual analysis system.
+        Analyze the video and structure a concise JSON response structured as follows.
 
-        # for future in concurrent.futures.as_completed(video_to_batches):
-        #     batch = future.result()
-        #     if batch:
-        #         batches.append(batch)
+        Frame activity - A concise description of is happening within the video.
+        Objects detected - A list of objects identified within a close proximity.
+        Cars detected - A list of JSON objects with the following properties: Car license plate(if visible), Color and Model.
+        People detected - A list of JSON objects with the following properties: Estimated Height, Age, Race, Emotional state, and proximity
+        Scene sentiment - Either 'neutral', 'dangerous' or 'unknown'.
+        ID cards detected - A list of JSON objects with the following properties: Surname, Names, Sex, Nationality, Identity Number, Date of Birth, Country of Birth, Status""",
+      },
+      {
+        "role": "user",
+        "content": [
+          {"type": "video", "video": segment_path},
+          {"type": "text", "text": system_prompt},
+        ],
+      },
+    ]
 
-        # elapsed_time = time.time() - start_time # timer logged
-        # print(f"Batching completed in {elapsed_time:.2f} seconds")
+    print('>>> Preparation for inference')
+    system_prompts = self.processor.apply_chat_template(
+      messages, tokenize=False, add_generation_prompt=True
+    )
+    image_inputs, video_inputs = process_vision_info(messages)
 
-        # batches.sort(key=lambda filename: int(filename.split('_')[-1].split('.')[0]))
+    check_memory(self.device)
 
-        messages = [
-            {
-                "role": "system",
-                "content": """You are an expert visual analysis system.
-                Analyze the video and structure a concise JSON response structured as follows.
+    print('Preparing inputs ....')
+    inputs = self.processor(
+      text=system_prompts,
+      videos=video_inputs,
+      images=image_inputs,
+      padding=True,
+      return_tensors="pt",
+    )
+    inputs =  inputs.to(self.device)
 
-                Frame activity - A concise description of is happening within the video.
-                Objects detected - A list of objects identified within a close proximity.
-                Cars detected - A list of JSON objects with the following properties: Car license plate(if visible), Color and Model.
-                People detected - A list of JSON objects with the following properties: Estimated Height, Age, Race, Emotional state, and proximity
-                Scene sentiment - Either 'neutral', 'dangerous' or 'unknown'.
-                ID cards detected - A list of JSON objects with the following properties: Surname, Names, Sex, Nationality, Identity Number, Date of Birth, Country of Birth, Status""",
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "video", "video": segment_path},
-                    {"type": "text", "text": system_prompt},
-                ],
-            },
-        ]
+    print('>>> Inference: Generation of the output')
+    outputs = self.model.generate(**inputs, max_new_tokens=max_tokens)
 
-        print('>>> Preparation for inference')
-        system_prompts = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        image_inputs, video_inputs = process_vision_info(messages)
+    generated_ids_trimmed = [
+      out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
+    ]
 
-        check_memory(self.device)
+    generated_response = self.processor.batch_decode(
+      generated_ids_trimmed,
+      skip_special_tokens=True,
+      clean_up_tokenization_spaces=False,
+    )
+    generated_response = self.process_generated_response(generated_response[0], seq)
 
-        print('Preparing inputs ....')
-        inputs = self.processor(
-            text=system_prompts,
-            videos=video_inputs,
-            images=image_inputs,
-            padding=True,
-            return_tensors="pt",
-        )
-        inputs =  inputs.to(self.device)
+    finished_in = time.time() - start_time
+    response = {
+      **generated_response,
+      "batch_length": batch_length,
+      "finished_in": round(finished_in, 3)
+    }
+    return response
 
-        print('>>> Inference: Generation of the output')
-        outputs = self.model.generate(**inputs, max_new_tokens=max_tokens)
-
-        # with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-        #     outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
-        # generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
-        generated_ids_trimmed = [
-            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
-        ]
-
-        generated_response = self.processor.batch_decode(
-            generated_ids_trimmed,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        )
-        generated_response = self.process_generated_response(generated_response[0], seq)
-
-        finished_in = time.time() - start_time
-        response = {
-            **generated_response,
-            "batch_length": batch_length,
-            "finished_in": round(finished_in, 3)
-        }
-        return response
-
-model_manager = Qwen2_VQA()
