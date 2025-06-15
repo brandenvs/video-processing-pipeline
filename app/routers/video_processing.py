@@ -1,5 +1,6 @@
 # pyright: reportGeneralTypeIssues=false
 import csv
+import datetime
 import json
 import os
 from pathlib import Path
@@ -9,12 +10,14 @@ import tempfile
 import time
 from typing import Optional
 import concurrent
+import uuid
 from pydantic import BaseModel
 import torch
 import gc
 import asyncio
 from torch.nn.attention import SDPBackend, sdpa_kernel
-from app.routers.database_service import Db_helper
+import urllib
+from routers.database_service import Db_helper
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig # type: ignore
 import tempfile
 
@@ -27,7 +30,7 @@ import subprocess
 # )
 from qwen_vl_utils import process_vision_info
 
-from app.routers import model_management as mm
+from routers import model_management as mm
 
 from fastapi import APIRouter
 
@@ -84,8 +87,15 @@ async def process_video(request_body: BaseProcessor):
   gc.collect()
   check_memory()
 
-  scene_detection = functools.partial(batch_scene_detect, request_body.source_path)
-  scene_detection_response = await loop.run_in_executor(executor, scene_detection)
+  timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+  filename = f'/home/ubuntu/adp-video-pipeline/source_data/{uuid.uuid4()}video.mp4'
+  print(request_body)
+  result = urllib.request.urlretrieve(request_body.source_path, filename)
+  print(result)
+
+  if (result):
+    scene_detection = functools.partial(batch_scene_detect, filename)
+    scene_detection_response = await loop.run_in_executor(executor, scene_detection)
   
   infer_obj = {
     'model_id': request_body.model_id,

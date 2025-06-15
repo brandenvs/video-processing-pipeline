@@ -8,10 +8,10 @@ import time
 from typing             import Optional
 import concurrent
 from pydantic           import BaseModel
-from app.routers.database_service import Db_helper
+from routers.database_service import Db_helper
 import librosa
 from transformers       import Qwen2AudioForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
-from app.routers        import model_management as mm
+from routers        import model_management as mm
 import torch
 import gc
 from moviepy            import VideoFileClip
