@@ -15,6 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+# pyright: reportGeneralTypeIssues=false
 
 import psutil
 import logging
@@ -169,7 +170,9 @@ def get_torch_device():
         elif is_mlu():
             return torch.device("mlu", torch.mlu.current_device())
         else:
-            return torch.device(torch.cuda.current_device())
+            #return torch.device(torch.cuda.current_device()) TODO
+            return torch.device("cpu") 
+    
 
 def get_total_memory(dev=None, torch_total_too=False):
     global directml_enabled

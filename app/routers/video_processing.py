@@ -1,3 +1,4 @@
+# pyright: reportGeneralTypeIssues=false
 import csv
 import json
 import os
@@ -14,7 +15,7 @@ import gc
 import asyncio
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from app.routers.database_service import Db_helper
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig # type: ignore
 import tempfile
 
 import subprocess
