@@ -19,7 +19,7 @@
 import psutil
 import logging
 from enum import Enum
-from app.routers.cli_args import args, PerformanceFeature
+from routers.cli_args import args, PerformanceFeature
 import torch
 import sys
 import platform
@@ -169,9 +169,7 @@ def get_torch_device():
         elif is_mlu():
             return torch.device("mlu", torch.mlu.current_device())
         else:
-            #return torch.device(torch.cuda.current_device()) TODO
-            return torch.device("cpu") 
-    
+            return torch.device(torch.cuda.current_device())
 
 def get_total_memory(dev=None, torch_total_too=False):
     global directml_enabled
