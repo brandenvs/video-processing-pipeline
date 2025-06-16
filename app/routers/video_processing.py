@@ -70,8 +70,6 @@ atexit.register(cleanup_executor)
 
 
 def check_memory(device=mm.get_torch_device):
-  print("Device Loaded: ", device)
-
   total_mem = mm.get_total_memory(device) / (1024 * 1024 * 1024)
   print(f"GPU has {total_mem} GBs")
 
@@ -82,6 +80,8 @@ def check_memory(device=mm.get_torch_device):
 
 @router.post("/process/")
 async def process_video(request_body: BaseProcessor):  
+  print('>>> Request Body', request_body)
+
   loop = asyncio.get_running_loop()
   torch.cuda.empty_cache()
   gc.collect()
@@ -89,9 +89,7 @@ async def process_video(request_body: BaseProcessor):
 
   timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
   filename = f'/home/ubuntu/adp-video-pipeline/source_data/{uuid.uuid4()}video.mp4'
-  print(request_body)
   result = urllib.request.urlretrieve(request_body.source_path, filename)
-  print(result)
 
   if (result):
     scene_detection = functools.partial(batch_scene_detect, filename)
@@ -104,35 +102,21 @@ async def process_video(request_body: BaseProcessor):
     'segments': scene_detection_response['segments'],
     'stats_scene': scene_detection_response['stats_scene']
   }
-  print(infer_obj)
+  print('Inference Object', json.dumps(infer_obj, indent=2))
   process_video = functools.partial(model_manager.inference_helper, **infer_obj)
   processed_video_response = await loop.run_in_executor(executor, process_video)
   
   # Cleanup for next video ...
   [os.remove(os.path.join('segments', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
   [os.remove(os.path.join('audio', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
-  
-  # for analysis_data in results:
-  #     analysis_ids = []
-
-  #     # Store in database
-  #     db_helper = Db_helper()
-  #     analysis_id = db_helper.video_analysis(
-  #         analysis_data, source_path=request_body.source_path
-  #     )
-
-  #     if analysis_id:
-  #         # analysis_data['id'] = analysis_id
-  #         analysis_ids.append(analysis_id)
 
   return {
     "status": "success",
     "scene_detection_response": scene_detection_response,
     "processed_video_response": processed_video_response
-    # "analysis_ids": analysis_ids,
   }
 
-#
+
 def get_mean_content_val(stats_file: str) -> float:
   content_vals = []
   
@@ -215,7 +199,6 @@ def batch_scene_detect(video):
     'stats_scene': stats_scene,
     "mean_content_val": round(mean_content_val, 3)
   }
-  print(json.dumps(response, indent=2))
   return response
 
 class Qwen2_VQA:
@@ -228,6 +211,7 @@ class Qwen2_VQA:
     self._model_loaded = False
 
   def process_generated_response(self, generated_response: str, sequence_no: int):
+    print(f'GENERATED RESPONSE FOR BATCH: {sequence_no}', generated_response)
     if generated_response.startswith("```json"):
       try:
         lines = generated_response.strip().splitlines()
@@ -248,7 +232,7 @@ class Qwen2_VQA:
       return
 
     torch.cuda.empty_cache()
-    print(gc.collect())
+    print('Total Garbage Collected', gc.collect())
     check_memory()
     torch.manual_seed(42)
 
@@ -269,7 +253,7 @@ class Qwen2_VQA:
     else:
       torch.float32
 
-    print(f'>>> Selected DType: {self.dtype}')
+    # print(f'>>> Selected DType: {self.dtype}')
 
     if self.dtype != torch.float16:
       quantization_config = BitsAndBytesConfig(
@@ -284,10 +268,10 @@ class Qwen2_VQA:
     # Get architecture details if CUDA is available
     if torch.cuda.is_available():
       device_index = torch.cuda.current_device()
-      device_name = torch.cuda.get_device_name(device_index)
+      # device_name = torch.cuda.get_device_name(device_index)
       capability = torch.cuda.get_device_capability(device_index)
-      print(f'>>> CUDA Device: {device_name}')
-      print(f'>>> Compute Capability: {capability[0]}.{capability[1]}')
+      # print(f'>>> CUDA Device: {device_name}')
+      # print(f'>>> Compute Capability: {capability[0]}.{capability[1]}')
 
       # Classify architecture
       major = capability[0]
@@ -345,18 +329,18 @@ class Qwen2_VQA:
         ], capture_output=True, text=True)                
         shutil.move(temp_path, segment_path)
 
-      with open(f'segments/{stats_scene[seq]["scene"]}', 'r') as f:
-        reader = csv.DictReader(f)
-        # NOTE THIS DOES NOT WORK !!!
-        for idx, row in enumerate(reader):
-          if idx > 0:
-            for val in row.values():
-              if isinstance(val, list):
-                batch_length = float(val[-1])
-                print(batch_length)
-      responses.append(self.inference(segment_path, system_prompt, max_tokens, seq, batch_length))
-    print(responses)
-    return responses
+      # with open(f'segments/{stats_scene[seq]["scene"]}', 'r') as f:
+      #   reader = csv.DictReader(f)
+      #   # NOTE THIS DOES NOT WORK !!!
+      #   for idx, row in enumerate(reader):
+      #     if idx > 0:
+      #       for val in row.values():
+      #         if isinstance(val, list):
+      #           batch_length = float(val[-1])
+      #           print(batch_length)
+      responses.append(self.inference(segment_path, system_prompt, max_tokens, seq, 0))
+    structured_output = ','.join(responses)
+    return structured_output
 
   def inference(self, segment_path: str, system_prompt: str, max_tokens: int, seq: int, batch_length: str):
     start_time = time.time() # timer
