@@ -84,123 +84,123 @@ class Db_helper:
             if self.conn and not self.conn.closed:
                 self.conn.close()
     
-    def store_document(self, document_name, document_path, field_names=None, video_processing_prompt=None,
-                      video_path=None, source_path=None, document_schema=None, generated_system_prompt=None,
-                      client_id="default", document_title=None, document_type="form", created_by="system"):
-        """
-        Store document with enhanced schema support for dynamic prompt generation.
+    # def store_document(self, document_name, document_path, field_names=None, video_processing_prompt=None,
+    #                   video_path=None, source_path=None, document_schema=None, generated_system_prompt=None,
+    #                   client_id="default", document_title=None, document_type="form", created_by="system"):
+    #     """
+    #     Store document with enhanced schema support for dynamic prompt generation.
         
-        Args:
-            document_name: Name of the document
-            document_path: Path to the document file
-            field_names: Legacy field names (for backward compatibility)
-            video_processing_prompt: Video processing configuration
-            video_path: Path to associated video file
-            source_path: Source path of the document
-            document_schema: DocumentSchema object with enhanced field information
-            generated_system_prompt: Generated system prompt text
-            client_id: Client identifier
-            document_title: Title of the document
-            document_type: Type of document (form, medical, legal, etc.)
-            created_by: User/system that created the document
-        """
-        try:
-            import json
-            self.conn = psycopg2.connect(**self.db_config)
-            self.cursor = self.conn.cursor()
+    #     Args:
+    #         document_name: Name of the document
+    #         document_path: Path to the document file
+    #         field_names: Legacy field names (for backward compatibility)
+    #         video_processing_prompt: Video processing configuration
+    #         video_path: Path to associated video file
+    #         source_path: Source path of the document
+    #         document_schema: DocumentSchema object with enhanced field information
+    #         generated_system_prompt: Generated system prompt text
+    #         client_id: Client identifier
+    #         document_title: Title of the document
+    #         document_type: Type of document (form, medical, legal, etc.)
+    #         created_by: User/system that created the document
+    #     """
+    #     try:
+    #         import json
+    #         self.conn = psycopg2.connect(**self.db_config)
+    #         self.cursor = self.conn.cursor()
 
-            # Use document_title if provided, otherwise use document_name
-            final_document_title = document_title or document_name
+    #         # Use document_title if provided, otherwise use document_name
+    #         final_document_title = document_title or document_name
 
-            # Prepare schema_fields from document_schema if provided
-            schema_fields_json = None
-            if document_schema:
-                if hasattr(document_schema, 'schema_fields'):
-                    # Convert DocumentSchema object to dict format suitable for JSONB
-                    schema_fields_dict = {}
-                    for field_name, schema_field in document_schema.schema_fields.items():
-                        if hasattr(schema_field, 'model_dump'):
-                            schema_fields_dict[field_name] = schema_field.model_dump()
-                        else:
-                            # Fallback for dict-like objects
-                            schema_fields_dict[field_name] = dict(schema_field)
-                    schema_fields_json = json.dumps(schema_fields_dict)
-                elif isinstance(document_schema, dict):
-                    # Handle dict format
-                    schema_fields_json = json.dumps(document_schema.get('schema_fields', {}))
+    #         # Prepare schema_fields from document_schema if provided
+    #         schema_fields_json = None
+    #         if document_schema:
+    #             if hasattr(document_schema, 'schema_fields'):
+    #                 # Convert DocumentSchema object to dict format suitable for JSONB
+    #                 schema_fields_dict = {}
+    #                 for field_name, schema_field in document_schema.schema_fields.items():
+    #                     if hasattr(schema_field, 'model_dump'):
+    #                         schema_fields_dict[field_name] = schema_field.model_dump()
+    #                     else:
+    #                         # Fallback for dict-like objects
+    #                         schema_fields_dict[field_name] = dict(schema_field)
+    #                 schema_fields_json = json.dumps(schema_fields_dict)
+    #             elif isinstance(document_schema, dict):
+    #                 # Handle dict format
+    #                 schema_fields_json = json.dumps(document_schema.get('schema_fields', {}))
             
-            # Fallback: create basic schema from field_names for backward compatibility
-            if not schema_fields_json and field_names:
-                schema_fields_dict = {}
-                field_list = field_names if isinstance(field_names, list) else [field_names]
-                for field_name in field_list:
-                    schema_fields_dict[field_name] = {
-                        "label": field_name,
-                        "field_type": "text",
-                        "required": True,
-                        "description": ""
-                    }
-                schema_fields_json = json.dumps(schema_fields_dict)
+    #         # Fallback: create basic schema from field_names for backward compatibility
+    #         if not schema_fields_json and field_names:
+    #             schema_fields_dict = {}
+    #             field_list = field_names if isinstance(field_names, list) else [field_names]
+    #             for field_name in field_list:
+    #                 schema_fields_dict[field_name] = {
+    #                     "label": field_name,
+    #                     "field_type": "text",
+    #                     "required": True,
+    #                     "description": ""
+    #                 }
+    #             schema_fields_json = json.dumps(schema_fields_dict)
 
-            insert_sql = """
-            INSERT INTO form_documents
-            (client_id, document_title, document_type, is_active, schema_fields, 
-             generated_system_prompt, video_processing_prompt, document_path, 
-             video_path, source_path, created_by, created_on, processed_date)
-            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
-            RETURNING id;
-            """
+    #         insert_sql = """
+    #         INSERT INTO form_documents
+    #         (client_id, document_title, document_type, is_active, schema_fields, 
+    #          generated_system_prompt, video_processing_prompt, document_path, 
+    #          video_path, source_path, created_by, created_on, processed_date)
+    #         VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
+    #         RETURNING id;
+    #         """
 
-            current_time = datetime.now()
-              # Convert video processing prompt to JSON string for postgres
-            video_prompt_string = None
-            if video_processing_prompt:
-                if isinstance(video_processing_prompt, (dict, list)):
-                    video_prompt_string = json.dumps(video_processing_prompt)
-                else:
-                    try:
-                        parsed = json.loads(video_processing_prompt)
-                        video_prompt_string = json.dumps(parsed)
-                    except (json.JSONDecodeError, TypeError):
-                        video_prompt_string = json.dumps({"prompt": str(video_processing_prompt)})
+    #         current_time = datetime.now()
+    #           # Convert video processing prompt to JSON string for postgres
+    #         video_prompt_string = None
+    #         if video_processing_prompt:
+    #             if isinstance(video_processing_prompt, (dict, list)):
+    #                 video_prompt_string = json.dumps(video_processing_prompt)
+    #             else:
+    #                 try:
+    #                     parsed = json.loads(video_processing_prompt)
+    #                     video_prompt_string = json.dumps(parsed)
+    #                 except (json.JSONDecodeError, TypeError):
+    #                     video_prompt_string = json.dumps({"prompt": str(video_processing_prompt)})
             
-            values = (
-                client_id,
-                final_document_title,
-                document_type,
-                True,  # is_active
-                schema_fields_json,  # JSONB
-                generated_system_prompt,  # TEXT
-                video_prompt_string,  # JSONB
-                document_path,
-                video_path,
-                source_path,
-                created_by,
-                current_time,  # created_on
-                current_time   # processed_date
-            )
+    #         values = (
+    #             client_id,
+    #             final_document_title,
+    #             document_type,
+    #             True,  # is_active
+    #             schema_fields_json,  # JSONB
+    #             generated_system_prompt,  # TEXT
+    #             video_prompt_string,  # JSONB
+    #             document_path,
+    #             video_path,
+    #             source_path,
+    #             created_by,
+    #             current_time,  # created_on
+    #             current_time   # processed_date
+    #         )
 
-            self.cursor.execute(insert_sql, values)
-            document_id = self.cursor.fetchone()[0]
+    #         self.cursor.execute(insert_sql, values)
+    #         document_id = self.cursor.fetchone()[0]
 
-            self.conn.commit()
-            print(f"Stored document '{final_document_title}' with ID: {document_id}")
+    #         self.conn.commit()
+    #         print(f"Stored document '{final_document_title}' with ID: {document_id}")
             
-            return document_id
+    #         return document_id
 
-        except Exception as e:
-            print(f"Database error in store_document: {e}")
-            import traceback
-            traceback.print_exc()
-            if self.conn:
-                self.conn.rollback()
-            return None
+    #     except Exception as e:
+    #         print(f"Database error in store_document: {e}")
+    #         import traceback
+    #         traceback.print_exc()
+    #         if self.conn:
+    #             self.conn.rollback()
+    #         return None
 
-        finally:
-            if self.cursor:
-                self.cursor.close()
-            if self.conn and not self.conn.closed:
-                self.conn.close()
+    #     finally:
+    #         if self.cursor:
+    #             self.cursor.close()
+    #         if self.conn and not self.conn.closed:
+    #             self.conn.close()
 
     def audio_analysis(self, analysis_data, source_path=None):
         try:

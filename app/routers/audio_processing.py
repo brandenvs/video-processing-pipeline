@@ -10,7 +10,7 @@ import concurrent
 from pydantic           import BaseModel
 from routers.database_service import Db_helper
 import librosa
-from transformers       import Qwen2AudioForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
+from transformers       import Qwen2AudioForConditionalGeneration, AutoProcessor, BitsAndBytesConfig # type: ignore
 from routers        import model_management as mm
 import torch
 import gc
@@ -43,15 +43,18 @@ def cleanup_executor():
 
 atexit.register(cleanup_executor)
 
-def check_memory(device=mm.get_torch_device()):
+def check_memory(device=mm.get_torch_device):
     print("Device Loaded: ", device)
+    result = mm.get_total_memory(device)
 
-    total_mem = mm.get_total_memory() / (1024 * 1024 * 1024)
-    print(f"GPU has {total_mem} GBs")
+    if isinstance(result, tuple):
+      total_mem_gb = result[0] / (1024 * 1024 * 1024)
+    else:
+      total_mem_gb = result
+    print(f"GPU has {total_mem_gb} GBs")
 
-    free_mem_gb = mm.get_free_memory(device) / (1024 * 1024 * 1024)
-    print(f"GPU memory checked: {free_mem_gb:.2f}GB available.")
-    return (free_mem_gb, total_mem)
+    print(f"GPU memory checked: {total_mem_gb:.2f}GB available.")
+    return (total_mem_gb, result)
 
 @router.post("/process/")
 async def process_audio(request_body: AudioProcessor):
@@ -167,7 +170,7 @@ class Qwen2_Audio:
         self,
         system_prompt,
         max_new_tokens=512,
-        source_path=None,
+        source_path: str = '',
     ):
         results = []
         os.makedirs('audio_segments', exist_ok=True)
@@ -181,7 +184,8 @@ class Qwen2_Audio:
                 # Extract audio from video
                 print(">>> Extracting audio from video")
                 video = VideoFileClip(source_path)
-                audio = AudioSegment.from_file(video.audio.filename)
+                if (video.audio):
+                  audio = AudioSegment.from_file(video.audio.filename)
                 video.close()
             else:
                 # Direct audio file
@@ -201,14 +205,14 @@ class Qwen2_Audio:
 
             # Process batches in parallel
             batches = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor: # type: ignore
                 print('>>> Processing audio segments')
                 batch_futures = {
                     executor.submit(self.process_batch, *segment): segment[3]
                     for segment in segments
                 }
                 
-                for future in concurrent.futures.as_completed(batch_futures):
+                for future in concurrent.futures.as_completed(batch_futures): # type: ignore
                     batch = future.result()
                     if batch:
                         batches.append(batch)
@@ -254,7 +258,7 @@ class Qwen2_Audio:
                     
                     print('>>> Preparing for inference')
                     # Prepare for inference
-                    system_prompts = self.processor.apply_chat_template(
+                    system_prompts = self.processor.apply_chat_template( # type: ignore
                         messages, tokenize=False, add_generation_prompt=True
                     )
                     
@@ -268,14 +272,14 @@ class Qwen2_Audio:
                                     audio_path = ele["audio_url"]
                                     audio_data, sr = librosa.load(
                                         audio_path,
-                                        sr=self.processor.feature_extractor.sampling_rate,
+                                        sr=self.processor.feature_extractor.sampling_rate, # type: ignore
                                     )
                                     audios.append(audio_data)
                     
                     print('>>> Processing inputs')
                     inputs = self.processor(
                         text=system_prompts, audios=audios, return_tensors="pt", padding=True
-                    )
+                    ) # type: ignore
                     inputs.input_ids = inputs.input_ids.to(self.device)
                     
                     # Free memory before generating
@@ -283,12 +287,12 @@ class Qwen2_Audio:
                     gc.collect()
                     
                     print('>>> Generating response')
-                    generate_ids = self.model.generate(
+                    generate_ids = self.model.generate( # type: ignore
                         **inputs, max_new_tokens=max_new_tokens
                     )
                     generate_ids = generate_ids[:, inputs.input_ids.size(1):]
                     
-                    generated_response = self.processor.batch_decode(
+                    generated_response = self.processor.batch_decode( # type: ignore
                         generate_ids,
                         skip_special_tokens=True,
                         clean_up_tokenization_spaces=False,
@@ -344,3 +348,4 @@ class Qwen2_Audio:
             except:
                 pass
             raise # Will # Re-raises the original exception <-
+model_manager = Qwen2_Audio()
