@@ -5,18 +5,15 @@ import os
 import uuid
 import atexit
 from pathlib import Path
-import re
 import shutil
 import tempfile
 import time
-from typing import Any, Dict, Optional
-import concurrent
+from typing import Dict, Optional
 import uuid
 from pydantic import BaseModel
 import torch
 import gc
 import asyncio
-from torch.nn.attention import SDPBackend, sdpa_kernel
 import urllib
 from routers.database_service import Db_helper
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig # type: ignore
@@ -110,7 +107,7 @@ async def process_video(request_body: BaseProcessor):
     'segments': scene_detection_response['segments'],
     'stats_scene': scene_detection_response['stats_scene']
   }
-  print('Inference Object', json.dumps(infer_obj, indent=2))
+  print('Inference Object', infer_obj)
   process_video = functools.partial(model_manager.inference_helper, **infer_obj)
   processed_video_response = await loop.run_in_executor(executor, process_video)
   

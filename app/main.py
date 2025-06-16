@@ -1,9 +1,8 @@
 import shutil
 from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse
-import psycopg2
 from fastapi import status
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, UploadFile
 
 from pydantic import BaseModel
 from typing import Optional
