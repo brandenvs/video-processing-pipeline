@@ -426,7 +426,7 @@ class Qwen2_VQA:
       generated_response = self.process_generated_response(generated_response[0], seq)
 
       finished_in = time.time() - start_time
-      print(generated_response)
+      print(json.dumps(generated_response, indent=2))
       response = {
         **generated_response,
         "batch_length": batch_length,
