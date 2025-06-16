@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional
 
-from app.routers import document_processing#, video_processing TODO
+from app.routers import document_processing, document_flow #, video_processing TODO
 
 
 class ProcessingResponse(BaseModel):
@@ -33,6 +33,7 @@ app = FastAPI(
 )
 # app.include_router(video_processing.router) TODO
 app.include_router(document_processing.router)
+app.include_router(document_flow.router)
 
 
 @app.get("/")

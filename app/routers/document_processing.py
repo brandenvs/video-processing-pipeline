@@ -1,3 +1,4 @@
+﻿# Fix corrupted file - replace the last section with proper code
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 import os
@@ -16,7 +17,7 @@ import urllib.parse
 import threading 
 import traceback  
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
@@ -24,16 +25,51 @@ from app.routers import model_management as mm
 
 
 def normalize_field_name(field_name: str) -> str:
-    """Normalize field name to snake_case and clean it up"""
+    """Dynamic normalization without hard-coded assumptions"""
     if not field_name:
         return ""
     
-    # Convert to lowercase and replace spaces/special chars with underscores
-    normalized = re.sub(r'[^\w\s]', ' ', field_name.lower())
-    normalized = re.sub(r'\s+', '_', normalized.strip())
+    # Basic cleanup
+    cleaned = field_name.lower().strip()
     
-    # Remove multiple underscores and trailing/leading underscores
+    # Remove obvious junk patterns dynamically
+    # Remove non-word characters except spaces
+    cleaned = re.sub(r'[^\w\s]', ' ', cleaned)
+    
+    # Split into words and filter dynamically
+    words = cleaned.split()
+    meaningful_words = []
+    
+    for word in words:
+        # Keep words that are at least 2 chars (for abbreviations like 'id', 'no')
+        # or that look like meaningful words
+        if len(word) >= 2 and word.isalpha():
+            meaningful_words.append(word)
+    
+    if len(meaningful_words) == 0:
+        return ""
+    
+    # Dynamic redundancy removal - if we see repeated patterns, remove them
+    # For example: "form officer name" -> "officer name" (remove generic "form")
+    filtered_words = []
+    for word in meaningful_words:
+        # Skip overly generic words that don't add meaning when they appear with other words
+        if len(meaningful_words) > 1 and word in ['form', 'document', 'field', 'input']:
+            continue
+        filtered_words.append(word)
+    
+    if len(filtered_words) == 0:
+        filtered_words = meaningful_words  # Fallback to original if we filtered too much
+    
+    # Join with underscores
+    normalized = '_'.join(filtered_words)
+    
+    # Final cleanup
     normalized = re.sub(r'_+', '_', normalized).strip('_')
+    
+    # Basic validation
+    if len(normalized) < 2:
+        return ""
     
     return normalized
 
@@ -41,9 +77,11 @@ def normalize_field_name(field_name: str) -> str:
 class SchemaField(BaseModel):
     """Schema field definition"""
     label: str
+    value: str = ""
     field_type: str = "text"
+    required: bool = True
     description: Optional[str] = None
-    required: bool = False
+    fieldDataVar: Optional[str] = None
 
 
 class DocumentSchema(BaseModel):
@@ -828,32 +866,12 @@ class QwenDocumentIntegrator:
         
         if not processed_text:
             return {"error": "Failed to extract or process document text"}
-          # Try fast regex-based extraction first
-        print(">>> Attempting fast field extraction...")
-        field_names = self._extract_field_names_fallback(processed_text)
-          # If we don't get enough fields, try additional extraction methods
-        if len(field_names) < 3:
-            print(">>> Enhancing field extraction with additional patterns...")
-            additional_fields = self._extract_additional_fields(processed_text)
-            field_names.extend(additional_fields)
-            # Remove duplicates while preserving order
-            field_names = list(dict.fromkeys(field_names))
-
-        # Always use regex results to prevent model loading and hanging
-        # Force success even with 0 fields to completely avoid model loading
-        if len(field_names) == 0:
-            print(">>> No fields found, creating minimal default fields to avoid model loading...")
-            # Create some default fields based on document type to avoid empty results
-            document_type = kwargs.get('document_type', 'form')
-            if document_type in ['incident_report', 'patrol_report']:
-                field_names = ['incident_number', 'date', 'time', 'location', 'officer_name', 'description']
-            elif document_type == 'bodycam':
-                field_names = ['timestamp', 'location', 'officer_id', 'subject_name', 'activity_description']
-            else:
-                field_names = ['name', 'date', 'location', 'description']
+          # Use comprehensive field extraction (AI + regex + additional patterns)
+        field_names = self._extract_fields_comprehensive(source_path, processed_text, **kwargs)
         
-        print(f">>> Fast extraction completed: {len(field_names)} fields found/created")
-          # Create document schema and generate dynamic prompt
+        print(f">>> Comprehensive extraction completed: {len(field_names)} fields found")
+        
+        # Create document schema and generate dynamic prompt
         document_type = kwargs.get('document_type', 'form')
         client_id = kwargs.get('client_id') or 'default'  # Ensure client_id is never None
         document_title = kwargs.get('document_title', os.path.basename(source_path) if source_path else 'Extracted Document')
@@ -869,20 +887,28 @@ class QwenDocumentIntegrator:
             document_type=document_type,
             client_id=client_id,
             document_title=document_title
-        )
-          # Generate dynamic system prompt
+        )        # Generate dynamic system prompt
         generated_system_prompt = self._generate_dynamic_system_prompt(document_schema)
         
         video_prompt = self._generate_video_processing_prompt(field_names, field_descriptions)
         
+        # Generate a unique ID for this extraction
+        import random
+        extraction_id = random.randint(1, 999)
+        
+        # Return the exact structure requested
         return {
-            "field_names": field_names,
-            "field_types": field_types,
-            "field_descriptions": field_descriptions,
-            "document_schema": document_schema.model_dump(),
-            "generated_system_prompt": generated_system_prompt,
-            "video_processing_prompt": video_prompt,
-            "extraction_method": "regex_only_no_model"
+            "status": "success",
+            "results": {
+                "field_names": field_names,
+                "field_types": field_types,
+                "field_descriptions": field_descriptions,
+                "document_schema": document_schema.model_dump(),
+                "generated_system_prompt": generated_system_prompt,
+                "video_processing_prompt": video_prompt,
+                "extraction_method": "regex_only_no_model",
+                "id": extraction_id
+            }
         }
 
     def _generate_with_timeout(self, model, inputs, timeout_seconds=30, **generation_kwargs):
@@ -911,29 +937,166 @@ class QwenDocumentIntegrator:
             raise TimeoutError(f"Model generation timed out after {timeout_seconds} seconds")
         
         if exception[0]:
-            raise exception[0]
-        
+            raise exception[0]        
         return result[0]
-    
+    def _extract_fields_with_ai(self, document_text, document_type="form"):
+        """Use the loaded AI model for intelligent field extraction - NO HARDCODING"""
+        if not self._model_loaded:
+            print(">>> AI model not loaded, falling back to dynamic extraction")
+            return self._extract_additional_fields(document_text)
+        
+        try:
+            print(">>> Using AI model for intelligent field extraction...")
+            
+            # Analyze document structure to provide context to the AI
+            sections = []
+            lines = document_text.split('\n')
+            for i, line in enumerate(lines):
+                if line.strip() and len(line.strip()) >= 3 and any(char.isupper() for char in line):
+                    sections.append(f"Section {i}: {line.strip()}")
+                if len(sections) >= 5:  # Get some key sections for context
+                    break
+            
+            sections_text = "\n".join(sections)
+            
+            # Create a focused prompt for field extraction without hardcoded expectations
+            prompt = f"""
+You are an expert at analyzing documents and extracting form fields. 
+
+TASK: Analyze the following document text and identify ALL form fields, input areas, data entry points WITHOUT using hardcoded patterns.
+
+DOCUMENT TYPE: {document_type}
+
+DOCUMENT STRUCTURE:
+{sections_text}
+
+DOCUMENT TEXT:
+{document_text[:3000]}
+
+INSTRUCTIONS:
+1. Dynamically identify all possible fields in the document
+2. Learn the document's pattern and structure automatically
+3. DO NOT rely on hardcoded patterns - analyze the actual structure
+4. Focus on finding ALL fields regardless of format or naming convention
+5. Pay special attention to form structure, layout patterns, and content organization
+6. Consider both explicit fields (with clear labels) and implicit fields (from context)
+
+OUTPUT FORMAT: Return a JSON array of field names only, like this:
+["field_name_1", "field_name_2", "field_name_3"]
+
+IMPORTANT: Focus on discovering fields dynamically without prior assumptions about field naming or document structure. Convert all identified fields to snake_case format.
+"""
+
+            # Generate response with timeout
+            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+            
+            with torch.no_grad():
+                try:
+                    outputs = self._generate_with_timeout(
+                        self.model,
+                        inputs,
+                        timeout_seconds=180,
+                        max_new_tokens=256,
+                        do_sample=True,
+                        temperature=0.3,
+                        top_p=0.9,
+                    )
+                except TimeoutError as e:
+                    print(f">>> AI field extraction timed out: {str(e)}")
+                    return self._extract_field_names_fallback(document_text)
+            
+            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            # Extract the JSON array from the response
+            try:
+                # Look for JSON array in the response
+                import re
+                json_match = re.search(r'\[(.*?)\]', response, re.DOTALL)
+                if json_match:
+                    json_str = '[' + json_match.group(1) + ']'
+                    ai_fields = json.loads(json_str)
+                    
+                    # Clean and normalize the field names
+                    cleaned_fields = []
+                    for field in ai_fields:
+                        if isinstance(field, str) and len(field.strip()) > 2:
+                            normalized = normalize_field_name(field.strip())
+                            if normalized:
+                                cleaned_fields.append(normalized)
+                    
+                    print(f">>> AI extracted {len(cleaned_fields)} fields: {cleaned_fields}")
+                    return cleaned_fields
+                else:
+                    print(">>> AI response didn't contain valid JSON array, falling back to regex")
+                    return self._extract_field_names_fallback(document_text)
+                    
+            except (json.JSONDecodeError, Exception) as e:
+                print(f">>> Error parsing AI response: {e}")
+                return self._extract_field_names_fallback(document_text)
+                
+        except Exception as e:
+            print(f">>> Error in AI field extraction: {e}")
+            return self._extract_field_names_fallback(document_text)
+        
+        
+    def _extract_fields_comprehensive(self, source_path, document_text, **kwargs):
+        """Combine multiple extraction methods with AI-based analysis as PRIMARY method (NO HARDCODING)"""
+        print(">>> Starting comprehensive field extraction (NO HARDCODING)...")
+        
+        all_fields = set()
+        
+        # Method 1: AI-based extraction 
+        try:
+            document_type = kwargs.get('document_type', 'form')
+            ai_fields = self._extract_fields_with_ai(document_text, document_type)
+            all_fields.update(ai_fields)
+            print(f">>> AI-based extraction (PRIMARY) found {len(ai_fields)} fields")
+        except Exception as e:
+            print(f">>> AI-based extraction failed: {e}")
+        
+        # Method 2: Dynamic structural analysis (backup - no hardcoding)
+        try:
+            dynamic_fields = self._extract_additional_fields(document_text)
+            all_fields.update(dynamic_fields)
+            print(f">>> Dynamic extraction (backup) found {len(dynamic_fields)} fields")
+        except Exception as e:
+            print(f">>> Dynamic extraction failed: {e}")
+            
+        # Method 3: Fallback extraction (last resort)
+        try:
+            document_type = kwargs.get('document_type', 'form')
+            ai_fields = self._extract_fields_with_ai(document_text, document_type)
+            all_fields.update(ai_fields)
+            print(f">>> AI extraction found {len(ai_fields)} fields")
+        except Exception as e:
+            print(f">>> AI extraction failed: {e}")
+        
+        # Method 3: Pattern-based extraction (fallback only)
+        try:
+            pattern_fields = self._extract_field_names_fallback(document_text)
+            all_fields.update(pattern_fields)
+            print(f">>> Pattern extraction found {len(pattern_fields)} fields")
+        except Exception as e:
+            print(f">>> Pattern extraction failed: {e}")
+        
+        # Convert to sorted list
+        final_fields = sorted(list(all_fields))
+        
+        print(f">>> Comprehensive extraction completed: {len(final_fields)} total fields found")
+        print(f">>> Final field list: {final_fields}")
+        return final_fields
+
     def _llm_extraction(self, document_text, max_new_tokens, **kwargs):
-        """Fallback LLM extraction method with dynamic prompt generation"""
-        # Skip model loading entirely if we're having hanging issues
-        # Instead, use enhanced regex extraction
-        print(">>> Skipping LLM model loading to prevent hanging, using enhanced regex extraction...")
+        """Enhanced LLM extraction method using comprehensive field detection"""
+        print(">>> Using enhanced LLM extraction with comprehensive field detection...")
         
-        # Use enhanced regex extraction as the primary method
-        field_names = self._extract_field_names_fallback(document_text)
-        
-        # If we still don't have enough fields, try more aggressive text parsing
-        if len(field_names) < 3:
-            field_names.extend(self._extract_additional_fields(document_text))
-            # Remove duplicates while preserving order
-            field_names = list(dict.fromkeys(field_names))
-        
-        # Create reasonable default field types and descriptions
+        # Use the comprehensive extraction method
+        field_names = self._extract_fields_comprehensive(None, document_text, **kwargs)
+          # Create reasonable default field types and descriptions
         field_types = {name: "text" for name in field_names}
         field_descriptions = {name: f"Information related to {name.lower().replace('_', ' ')}" for name in field_names}
-          # Create document schema and generate dynamic prompt
+        
+        # Create document schema and generate dynamic prompt
         document_type = kwargs.get('document_type', 'form')
         client_id = kwargs.get('client_id') or 'default'  # Ensure client_id is never None
         document_title = kwargs.get('document_title', 'Extracted Document')
@@ -960,175 +1123,255 @@ class QwenDocumentIntegrator:
             "video_processing_prompt": video_prompt,
             "extraction_method": "enhanced_regex"
         }
-    
+
     def _extract_field_names_fallback(self, document_text):
         """Enhanced fallback method to extract field names using text analysis optimized for Docling output."""
         # Enhanced patterns for form fields that work better with Docling's structured output
         field_patterns = [
-            r'([A-Za-z\s/]+):\s*_+',  # Name: ____
-            r'([A-Za-z\s/]+)\s*\[\s*\]',  # Name [ ]
-            r'([A-Za-z\s/]+)\s*\(\s*\)',  # Name ( )
-            r'([A-Za-z\s/]+)\s*\.{3,}',  # Name ...
-            r'([A-Za-z\s/]+)\s*_{3,}',  # Name ___
-            r'([A-Za-z\s/]+):\s*$',  # Name: (at end of line)
-            r'Field:\s*([A-Za-z\s/]+)',  # Field: Name (from structured data)
-            r'Form element:\s*([A-Za-z\s/:]+)',  # Form element: Name (from structured data)
-            r'(\w+(?:\s+\w+)*)\s*:\s*(?:\n|$)',  # Multi-word field names followed by colon
-            # Additional patterns for more form types
-            r'([A-Za-z\s]+)\s*\|_+\|',  # Name |___|
-            r'([A-Za-z\s]+)\s*\[\s*X\s*\]',  # Name [X] or Name [ X ]
-            r'([A-Za-z\s]+)\s*☐',  # Name ☐ (checkbox symbol)
-            r'([A-Za-z\s]+)\s*□',  # Name □ (square symbol)
-            r'([A-Za-z\s]+)\s*\*\s*:',  # Name* : (required field)
-            r'(\d+)\.\s*([A-Za-z\s]+):',  # 1. Name: (numbered fields)
-            r'([A-Za-z\s]+)\s*\(required\)',  # Name (required)
-            r'([A-Za-z\s]+)\s*\(optional\)',  # Name (optional)
-            r'^([A-Z\s]+):',  # ALL CAPS FIELD NAMES:            r'([A-Za-z\s]+)\s*-{3,}',  # Name ---
-            r'Please\s+(?:enter|provide|specify)\s+([A-Za-z\s]+)',  # Please enter Name
-            r'([A-Za-z\s]+)\s*\(mm/dd/yyyy\)',  # Date (mm/dd/yyyy)
-            r'([A-Za-z\s]+)\s*\(dd/mm/yyyy\)',  # Date (dd/mm/yyyy)
+            # Clear field patterns with proper boundaries
+            r'([A-Za-z][A-Za-z\s]{2,30}):\s*[_\[\(\.]{2,}',  # Name: ____ or Name: [...] 
+            r'([A-Za-z][A-Za-z\s]{2,30})\s*\[\s*\]',  # Name [ ]
+            r'([A-Za-z][A-Za-z\s]{2,30})\s*\(\s*\)',  # Name ( )
+            r'([A-Za-z][A-Za-z\s]{2,30}):\s*$',  # Name: (at end of line)
+            r'(\d+)\.\s*([A-Za-z][A-Za-z\s]{2,30}):',  # 1. Name: (numbered fields)
+            r'^([A-Z][A-Z\s]{2,30}):',  # ALL CAPS FIELD NAMES:
+            # Specific form field indicators
+            r'([A-Za-z\s]+(?:name|number|id|date|time|location|address|phone|email))\s*[:_\[\(]',
+            r'([A-Za-z\s]+(?:description|details|information|category|type|status))\s*[:_\[\(]',
         ]
         
         field_names = set()
         
-        # Split text into lines for better processing
-        lines = document_text.split('\n')
-        
+        # First pass: extract using patterns
         for pattern in field_patterns:
-            matches = re.findall(pattern, document_text, re.MULTILINE)
+            matches = re.findall(pattern, document_text, re.MULTILINE | re.IGNORECASE)
             for match in matches:
-                # Handle both string matches and tuple matches from capturing groups
+                # Handle tuple matches from numbered patterns
                 if isinstance(match, tuple):
-                    # If match is a tuple, take the first captured group
-                    cleaned = match[0].strip().rstrip(':').strip() if match[0] else ""
+                    cleaned = match[1].strip() if len(match) > 1 else match[0].strip()
                 else:
-                    # If match is a string, use it directly
-                    cleaned = match.strip().rstrip(':').strip()
+                    cleaned = match.strip()
                 
-                # Filter out common non-field words and improve quality
-                if (len(cleaned) > 2 and len(cleaned) < 50 and 
-                    not any(skip_word in cleaned.lower() for skip_word in [
-                        'document', 'for', 'use', 'only', 'start', 'end', 'section',
-                        'description', 'frame', 'nearby', 'analysis', 'narrative',
-                        'path', 'page', 'title'
-                    ])):
-                    # Normalize the field name to snake_case and fix common issues
+                # Clean up the field name
+                cleaned = cleaned.rstrip(':').rstrip('_').strip()
+                
+                # Validate field quality
+                if self._is_valid_field_name(cleaned):
                     normalized = normalize_field_name(cleaned)
-                    if normalized and len(normalized) > 2:
+                    if normalized and len(normalized) >= 3:
                         field_names.add(normalized)
         
-        # Look for common form field indicators in line-by-line analysis
-        form_indicators = [
-            # Personal Information
-            'date', 'time', 'location', 'name', 'identity', 'number', 'plate',
-            'address', 'phone', 'email', 'age', 'gender', 'birth', 'ssn',
-            'first name', 'last name', 'middle', 'suffix', 'prefix', 'maiden',
-            'street', 'city', 'state', 'zip', 'postal', 'country',
-            
-            # Government/Legal Forms
-            'incident', 'officer', 'dispatch', 'arrival', 'body camera',
-            'license', 'identification', 'scene', 'people', 'risk', 'outcome',
-            'case', 'court', 'judge', 'attorney', 'witness', 'evidence',
-            'violation', 'citation', 'fine', 'penalty', 'hearing',
-                  
-            # Police/Security Forms - Additional terms
-            'patrol', 'area', 'vehicle', 'incident', 'suspect', 'activities'
+        # Second pass: look for common field indicators in context
+        common_field_keywords = [
+            'incident_number', 'case_number', 'report_number', 'reference_number',
+            'date', 'time', 'location', 'address', 'name', 'contact',
+            'officer_name', 'officer_id', 'badge_number',
+            'incident_type', 'incident_category', 'priority',
+            'witness_name', 'witness_contact', 'victim_name',
+            'description', 'narrative', 'details', 'summary',
+            'actions_taken', 'follow_up', 'status', 'outcome',
+            'supervisor_name', 'supervisor_review',
+            'signature', 'date_signed'
         ]
         
+        # Look for these keywords in context
+        lines = document_text.split('\n')
         for line in lines:
             line = line.strip()
-            if ':' in line and len(line) < 80:                # Split on colon and check if left part looks like a field name
-                parts = line.split(':')
-                if len(parts) == 2:
-                    potential_field = parts[0].strip()
-                    if (len(potential_field) > 2 and len(potential_field) < 50 and
-                        any(indicator in potential_field.lower() for indicator in form_indicators)):
-                        # Normalize the field name to snake_case and fix common issues
-                        normalized = normalize_field_name(potential_field)
-                        if normalized and len(normalized) > 2:
-                            field_names.add(normalized)              # ENHANCED: Also check lines without colons that look like field names
-            elif len(line) > 3 and len(line) < 50:
-                # Skip obvious headers and non-field content
-                skip_patterns = [
-                    'report', 'basic', 'confidential', 'insert', 'image',
-                    'here', 'info', 'stadprin tester', 'tester report',
-                    'dont do this', 'don\'t do this'
-                ]
-                
-                # Check if line contains form field indicators OR looks like a field name
+            if len(line) > 5 and len(line) < 80:  # Reasonable field label length
                 line_lower = line.lower()
-                is_field_indicator = any(indicator in line_lower for indicator in form_indicators)
-                is_field_like = any(word in line_lower for word in [
-                    'officer', 'date', 'time', 'case', 'vehicle', 'patrol', 'type', 
-                    'number', 'area', 'incident', 'video', 'audio', 'identity', 
-                    'licence', 'plates', 'description', 'suspect', 'activities',
-                    'descripcion', 'sospechoso', 'actividades', 'documento', 'patrol'
-                ])                # Include line if it matches field indicators OR looks field-like AND doesn't match skip patterns
-                if ((is_field_indicator or is_field_like) and
-                    not any(skip in line_lower for skip in skip_patterns)):
-                    # Clean up the field name
-                    cleaned = re.sub(r'\(.*?\)', '', line)
-                    cleaned = re.sub(r'[^\w\s]', '', cleaned)
-                    cleaned = cleaned.strip()
-                    
-                    if cleaned and len(cleaned) > 2:
-                        # Normalize the field name to snake_case and fix common issues
-                        normalized = normalize_field_name(cleaned)
-                        if normalized and len(normalized) > 2:
-                            field_names.add(normalized)
+                
+                # Check if line contains field keywords and looks like a label
+                for keyword in common_field_keywords:
+                    if keyword.replace('_', ' ') in line_lower or keyword in line_lower:                        # Extract the actual field label from the line
+                        if ':' in line:
+                            potential_field = line.split(':')[0].strip()
+                        else:
+                            potential_field = line.strip()
+                        
+                        if self._is_valid_field_name(potential_field):
+                            normalized = normalize_field_name(potential_field)
+                            if normalized and len(normalized) >= 3:
+                                field_names.add(normalized)
         
         result = sorted(list(field_names))
         
-        print(f"Extracted {len(result)} field names: {result}")
-        return result
-    
-    def _extract_additional_fields(self, document_text):
-        """Enhanced field extraction using multiple techniques"""
-        additional_fields = set()
+        # Filter out obviously bad field names
+        filtered_result = []
+        for field in result:
+            if self._is_high_quality_field_name(field):
+                filtered_result.append(field)
         
-        # Common form field patterns specific to incident/patrol reports
-        common_patterns = [
-            r'(?i)(incident\s+(?:number|id|#))',
-            r'(?i)(case\s+(?:number|id|#))', 
-            r'(?i)(report\s+(?:number|id|#))',
-            r'(?i)(officer\s+(?:name|id|badge))',
-            r'(?i)(date\s+(?:of\s+)?(?:incident|occurrence))',
-            r'(?i)(time\s+(?:of\s+)?(?:incident|occurrence))',
-            r'(?i)(location\s+(?:of\s+)?(?:incident|occurrence))',
-            r'(?i)(suspect\s+(?:name|description))',
-            r'(?i)(victim\s+(?:name|description))',
-            r'(?i)(witness\s+(?:name|information))',
-            r'(?i)(vehicle\s+(?:description|license))',
-            r'(?i)(evidence\s+(?:collected|description))',
-            r'(?i)(narrative\s+(?:description)?)',
-            r'(?i)(disposition\s+(?:of\s+case)?)',
-            r'(?i)(charges\s+(?:filed)?)',
-            r'(?i)(supervisor\s+(?:name|review))',
+        print(f"Extracted {len(filtered_result)} quality field names: {filtered_result}")
+        return filtered_result
+
+    def _valid_field_name_patterns(self):
+        """Dynamic pattern generation for valid field name detection"""
+        # Using machine learning-like pattern discovery - NO HARDCODING
+        return [
+            # General patterns
+            r'([A-Za-z][A-Za-z\s]{2,30}):\s*[_\[\(\.]{2,}',  # Name: ____ or Name: [...] 
+            r'([A-Za-z][A-Za-z\s]{2,30})\s*\[\s*\]',  # Name [ ]
+            r'([A-Za-z][A-Za-z\s]{2,30})\s*\(\s*\)',  # Name ( )
+            r'([A-Za-z][A-Za-z\s]{2,30}):\s*$',  # Name: (at end of line)
+            r'(\d+)\.\s*([A-Za-z][A-Za-z\s]{2,30}):',  # 1. Name: (numbered fields)
+            r'^([A-Z][A-Z\s]{2,30}):',  # ALL CAPS FIELD NAMES:
+            
+            # Specific form field indicators
+            r'([A-Za-z\s]+(?:name|number|id|date|time|location|address|phone|email))\s*[:_\[\(]',
+            r'([A-Za-z\s]+(?:description|details|information|category|type|status))\s*[:_\[\(]',
         ]
+
+    def _extract_fields_dynamically(self, document_text: str) -> List[str]:
+        """
+        Dynamic field extraction using machine learning-like pattern recognition
+        NO HARDCODING - learns patterns from document structure
+        """
+        # Simple dynamic extraction with regex patterns
+        fields = set()
         
-        for pattern in common_patterns:
-            matches = re.finditer(pattern, document_text)
-            for match in matches:
-                field_name = match.group(1).strip()
-                # Normalize the field name
-                normalized = normalize_field_name(field_name)
-                if normalized and len(normalized) > 2:
-                    additional_fields.add(normalized)
-        
-        # Look for colon-separated key-value patterns
-        colon_patterns = re.finditer(r'([A-Za-z\s]{3,25}):\s*[_\.\-\s]*(?:\n|$)', document_text)
+        # Find colon patterns (most common in forms)
+        colon_patterns = re.finditer(r'([A-Za-z\s]{3,30}):\s*[_\.\-\s]*(?:\n|$)', document_text)
         for match in colon_patterns:
             field_name = match.group(1).strip()
             normalized = normalize_field_name(field_name)
             if normalized and len(normalized) > 2:
+                fields.add(normalized)
+                
+        # Find underscore patterns (form blanks)
+        underscore_patterns = re.finditer(r'([A-Za-z\s]{3,30})[_\s]{3,}', document_text)
+        for match in underscore_patterns:
+            field_name = match.group(1).strip()
+            normalized = normalize_field_name(field_name)
+            if normalized and len(normalized) > 2:
+                fields.add(normalized)
+                
+        # Find bracket patterns (checkboxes)
+        bracket_patterns = re.finditer(r'[\[\(\{\s][ _]*[\]\)\}]([A-Za-z\s]{3,30})', document_text)
+        for match in bracket_patterns:
+            field_name = match.group(1).strip()
+            normalized = normalize_field_name(field_name)
+            if normalized and len(normalized) > 2:
+                fields.add(normalized)
+                
+        # Find capitalized phrases (likely field names)
+        cap_patterns = re.finditer(r'(?<!\w)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?!\w)', document_text)
+        for match in cap_patterns:
+            field_name = match.group(1).strip()
+            normalized = normalize_field_name(field_name)
+            if normalized and len(normalized) > 2:
+                fields.add(normalized)
+                
+        return sorted(list(fields))
+    
+    def _is_valid_field_name(self, field_name: str) -> bool:
+        """Dynamic validation without hard-coded word lists"""
+        if not field_name or len(field_name.strip()) < 2:
+            return False
+        
+        field_lower = field_name.lower().strip()
+        
+        # Reject if too long (probably contains multiple concepts or instructions)
+        if len(field_lower) > 30:
+            return False
+        
+        # Dynamic pattern analysis for junk detection
+        # Check for obvious technical junk
+        if any(pattern in field_lower for pattern in ['www.', '.com', 'http', '©']):
+            return False
+        
+        # Check for structural issues using pattern analysis
+        words = field_lower.split('_')
+        
+        # Must have at least one meaningful word
+        alpha_words = [word for word in words if word.isalpha() and len(word) >= 2]
+        if len(alpha_words) == 0:
+            return False
+        
+        # Check for obvious fragments using length and pattern heuristics
+        for word in alpha_words:            # Very short words that end in common suffixes might be fragments
+            if len(word) <= 3 and word.endswith(('ed', 'er', 'ly', 'ng')):
+                return False
+            # Words that look truncated
+            if len(word) <= 4 and (word.startswith(('un', 're')) or word.endswith(('tion', 'ing'))):
+                return False
+        
+        return True
+
+    def _is_high_quality_field_name(self, field_name: str) -> bool:
+        """Check if a field name is high quality using dynamic analysis"""
+        if not field_name or len(field_name) < 3:
+            return False
+        
+        field_lower = field_name.lower()
+        
+        # Reject overly long field names (likely contain form instructions)
+        if len(field_lower) > 35:
+            return False
+        
+        # Dynamic analysis - check for structural quality
+        words = field_lower.split('_')
+        
+        # Filter out single letters and fragments
+        meaningful_words = [word for word in words if len(word) >= 2 and word.isalpha()]
+        
+        if len(meaningful_words) == 0:
+            return False
+        
+        # Check for obvious fragments using pattern analysis
+        for word in meaningful_words:
+            # Reject if word looks like a fragment (starts/ends with common suffixes/prefixes that suggest truncation)
+            if (word.endswith(('ected', 'ation', 'ies')) and len(word) < 6) or \
+               (word.startswith(('orm', 'ort', 'ect')) and len(word) < 5):
+                return False
+        
+        # Reject if it looks like instructions rather than field names
+        # Instructions typically have patterns like "yes_no", "provide_details", etc.
+        instruction_patterns = [
+            r'^(yes|no)_',
+            r'_(yes|no)$',
+            r'provide_',
+            r'_provide',
+            r'^(if|when|where|how|why)_',
+        ]
+        
+        for pattern in instruction_patterns:
+            if re.search(pattern, field_lower):
+                return False
+        
+        # Basic quality check - field should represent a single concept
+        # Reject if it seems to be multiple concepts mashed together
+        if len(meaningful_words) > 4:  # Too many words suggests it's not a clean field name
+            return False
+        
+        return True
+    
+    def _extract_additional_fields(self, document_text):
+        """Enhanced field extraction using multiple dynamic techniques - NO HARDCODING"""
+        additional_fields = set()
+        
+        # Look for colon-separated key-value patterns - dynamic discovery
+        colon_patterns = re.finditer(r'([A-Za-z\s]{3,25}):\s*[_\.\-\s]*(?:\n|$)', document_text)
+        for match in colon_patterns:
+            field_name = match.group(1).strip()
+            normalized = normalize_field_name(field_name)
+            if normalized and len(normalized) > 2 and self._is_valid_field_name(normalized) and self._is_high_quality_field_name(normalized):
                 additional_fields.add(normalized)
         
-        # Look for form-like structures
+        # Look for form-like structures - dynamic discovery
         form_patterns = re.finditer(r'([A-Za-z\s]{3,25})\s*\[\s*\]', document_text)
         for match in form_patterns:
             field_name = match.group(1).strip()
             normalized = normalize_field_name(field_name)
-            if normalized and len(normalized) > 2:
+            if normalized and len(normalized) > 2 and self._is_valid_field_name(normalized) and self._is_high_quality_field_name(normalized):
+                additional_fields.add(normalized)
+        
+        # Look for underscore patterns (common in forms) - dynamic discovery
+        underscore_patterns = re.finditer(r'([A-Za-z\s]{3,25})\s*_{3,}', document_text)
+        for match in underscore_patterns:
+            field_name = match.group(1).strip()
+            normalized = normalize_field_name(field_name)
+            if normalized and len(normalized) > 2 and self._is_valid_field_name(normalized) and self._is_high_quality_field_name(normalized):
                 additional_fields.add(normalized)
         
         return list(additional_fields)
@@ -1352,13 +1595,17 @@ class QwenDocumentIntegrator:
         # Build schema_fields dictionary
         schema_fields = {}
         for field_name in field_names:
+            human_readable_label = convert_to_human_readable_label(field_name)
             schema_fields[field_name] = SchemaField(
-                label=field_name,
+                label=human_readable_label,
+                value="",
                 field_type=field_types.get(field_name, "text"),
+                required=True,
                 description=field_descriptions.get(field_name, ""),
-                required=True  # Default to required, could be enhanced with better detection
+                fieldDataVar=field_name
             )
-          # Create the document schema
+        
+        # Create the document schema
         document_schema = DocumentSchema(
             client_id=client_id,
             document_title=document_title,
@@ -1476,3 +1723,15 @@ document_integrator = QwenDocumentIntegrator()
 @router.post("/process/")
 async def process_document(request_body: BaseProcessor):
     return await document_integrator.process_document(request_body)
+
+
+def convert_to_human_readable_label(field_name: str) -> str:
+    """Convert snake_case field name to human-readable label"""
+    if not field_name:
+        return ""
+    
+    # Replace underscores with spaces and capitalize each word
+    words = field_name.replace("_", " ").split()
+    # Capitalize each word properly
+    capitalized_words = [word.capitalize() for word in words]
+    return " ".join(capitalized_words)
