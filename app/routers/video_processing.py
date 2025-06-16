@@ -9,7 +9,7 @@ import re
 import shutil
 import tempfile
 import time
-from typing import Optional
+from typing import Any, Dict, Optional
 import concurrent
 import uuid
 from pydantic import BaseModel
@@ -45,11 +45,19 @@ from moviepy import VideoFileClip
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+class FieldDefinition(BaseModel):
+    label: str
+    field_type: str
+    description: str
+    required: bool = False
+
+
 class BaseProcessor(BaseModel):
   system_prompt: Optional[str] = "Identify key data and fillout the given system schema"
   max_tokens: Optional[int] = 512
   model_id: Optional[str] = "qwen/Qwen2.5-VL-3B-Instruct"
   source_path: str
+  input_schema: Dict[str, FieldDefinition]
 
 router = APIRouter()
 
@@ -80,15 +88,16 @@ def check_memory(device=mm.get_torch_device):
   return (free_mem_gb, total_mem)
 
 @router.post("/process/")
-async def process_video(request_body: BaseProcessor):  
+async def process_video(request_body: BaseProcessor):
+  print('request_body: ', request_body)
   loop = asyncio.get_running_loop()
   torch.cuda.empty_cache()
   gc.collect()
   check_memory()
 
   timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-  filename = f'/home/ubuntu/adp-video-pipeline/source_data/{uuid.uuid4()}video.mp4'
   print(request_body)
+  filename = f'/home/ubuntu/adp-video-pipeline/source_data/{uuid.uuid4()}video.mp4'
   result = urllib.request.urlretrieve(request_body.source_path, filename)
   print(result)
 
@@ -100,6 +109,7 @@ async def process_video(request_body: BaseProcessor):
     'model_id': request_body.model_id,
     'system_prompt': request_body.system_prompt,
     'max_tokens': request_body.max_tokens,
+    'input_schema': request_body.input_schema,
     'segments': scene_detection_response['segments'],
     'stats_scene': scene_detection_response['stats_scene']
   }
@@ -109,21 +119,8 @@ async def process_video(request_body: BaseProcessor):
   
   # Cleanup for next video ...
   [os.remove(os.path.join('segments', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
-  [os.remove(os.path.join('audio', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
+  [os.remove(os.path.join('audio', f)) for f in os.listdir('audio') if os.path.isfile(os.path.join('audio', f))]
   
-  # for analysis_data in results:
-  #     analysis_ids = []
-
-  #     # Store in database
-  #     db_helper = Db_helper()
-  #     analysis_id = db_helper.video_analysis(
-  #         analysis_data, source_path=request_body.source_path
-  #     )
-
-  #     if analysis_id:
-  #         # analysis_data['id'] = analysis_id
-  #         analysis_ids.append(analysis_id)
-
   return {
     "status": "success",
     "scene_detection_response": scene_detection_response,
@@ -131,7 +128,6 @@ async def process_video(request_body: BaseProcessor):
     # "analysis_ids": analysis_ids,
   }
 
-#
 def get_mean_content_val(stats_file: str) -> float:
   content_vals = []
   
@@ -174,10 +170,11 @@ def batch_scene_detect(video):
     
   # TODO Black box - splits
   response = subprocess.run([
-    'scenedetect', '--config', 'scenedetect.cfg',
-    '-i', video,
-    '--output', 'segments',
-    'detect-content', 'split-video', '--filename', '$SCENE_NUMBER', '--copy'
+      'scenedetect', '--config', 'scenedetect.cfg',
+      '-i', video,
+      '--output', 'segments',
+      'detect-content', '-t', '30',
+      'split-video', '--filename', '$SCENE_NUMBER', '--copy'
   ], check=True, capture_output=True, text=True)
   segments = [f for f in os.listdir('segments') if f.endswith('.mp4')]
 
@@ -196,10 +193,11 @@ def batch_scene_detect(video):
       '-i', f'segments/{segment}',
       '--output', 'segments',
       '--stats', stats,
-      'detect-content', 
+      'detect-content', '-t', '30',
       'list-scenes', '-f', scene,
       'split-video', '--filename', '$SCENE_NUMBER', '--copy'
     ], check=True, capture_output=True, text=True)
+    print(response.stdout)
     
     mean_content_val = get_mean_content_val(stats)
 
@@ -236,9 +234,22 @@ class Qwen2_VQA:
 
       except json.JSONDecodeError as e:
         print(f"JSON decode error: {e}")
-        return e
+        return {
+          "error": f"JSON parsing error: {str(e)}",
+          "sequence_no": sequence_no
+        } 
 
-    return generated_response
+    try:
+      json_response = json.loads(generated_response)
+      spread_response = {**json_response, **{"sequence_no": sequence_no}}
+      return spread_response
+    except json.JSONDecodeError as e:
+      print(f"JSON decode error: {e}")
+      return {
+        "error": f"JSON parsing error: {str(e)}",
+        "sequence_no": sequence_no,
+        "raw_sample": generated_response
+      }
 
   def load_model(self, model_id: str):
     if self._model_loaded:
@@ -315,7 +326,7 @@ class Qwen2_VQA:
 
     self._model_loaded = True
 
-  def inference_helper(self, model_id: str, system_prompt: str, max_tokens: int, segments: list, stats_scene: list):
+  def inference_helper(self, model_id: str, system_prompt: str, max_tokens: int, input_schema: str, segments: list, stats_scene: list):
     responses = []
         
     if not self._model_loaded:
@@ -351,25 +362,26 @@ class Qwen2_VQA:
               if isinstance(val, list):
                 batch_length = float(val[-1])
                 print(batch_length)
-      responses.append(self.inference(segment_path, system_prompt, max_tokens, seq, batch_length))
+      responses.append(self.inference(segment_path, system_prompt, max_tokens, input_schema, seq, batch_length))
     print(responses)
     return responses
 
-  def inference(self, segment_path: str, system_prompt: str, max_tokens: int, seq: int, batch_length: str):
+  def inference(self, segment_path: str, system_prompt: str, max_tokens: int, input_schema: str, seq: int, batch_length: str):
     start_time = time.time() # timer
+    
+    fields_info = {}
+    for field_name, field_def in input_schema.items():
+        fields_info[field_name] = {
+            "label": field_def.label,
+            "value": "[Generated Value Based on the video analysis]",
+        }
+    schema_str = json.dumps(fields_info, indent=2)
+    print('schema_str', schema_str)
 
     messages = [
       {
         "role": "system",
-        "content": """You are an expert visual analysis system.
-        Analyze the video and structure a concise JSON response structured as follows.
-
-        Frame activity - A concise description of is happening within the video.
-        Objects detected - A list of objects identified within a close proximity.
-        Cars detected - A list of JSON objects with the following properties: Car license plate(if visible), Color and Model.
-        People detected - A list of JSON objects with the following properties: Estimated Height, Age, Race, Emotional state, and proximity
-        Scene sentiment - Either 'neutral', 'dangerous' or 'unknown'.
-        ID cards detected - A list of JSON objects with the following properties: Surname, Names, Sex, Nationality, Identity Number, Date of Birth, Country of Birth, Status""",
+        "content": f"You are an expert visual analysis system. Analyze the video and generate structured output using the following JSON schema: {schema_str}",
       },
       {
         "role": "user",
@@ -379,10 +391,10 @@ class Qwen2_VQA:
         ],
       },
     ]
-
+    print(messages)
     print('>>> Preparation for inference')
     system_prompts = self.processor.apply_chat_template(
-      messages, tokenize=False, add_generation_prompt=True
+        messages, tokenize=False, add_generation_prompt=True
     )
     image_inputs, video_inputs = process_vision_info(messages)
 
@@ -399,25 +411,29 @@ class Qwen2_VQA:
     inputs =  inputs.to(self.device)
 
     print('>>> Inference: Generation of the output')
-    outputs = self.model.generate(**inputs, max_new_tokens=max_tokens)
+    try:
+      outputs = self.model.generate(**inputs, max_new_tokens=max_tokens)
 
-    generated_ids_trimmed = [
-      out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
-    ]
+      generated_ids_trimmed = [
+        out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
+      ]
 
-    generated_response = self.processor.batch_decode(
-      generated_ids_trimmed,
-      skip_special_tokens=True,
-      clean_up_tokenization_spaces=False,
-    )
-    generated_response = self.process_generated_response(generated_response[0], seq)
+      generated_response = self.processor.batch_decode(
+        generated_ids_trimmed,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+      )
+      generated_response = self.process_generated_response(generated_response[0], seq)
 
-    finished_in = time.time() - start_time
-    response = {
-      **generated_response,
-      "batch_length": batch_length,
-      "finished_in": round(finished_in, 3)
-    }
-    return response
+      finished_in = time.time() - start_time
+      print(generated_response)
+      response = {
+        **generated_response,
+        "batch_length": batch_length,
+        "finished_in": round(finished_in, 3)
+      }
+      return response
+    except Exception as ex:
+      print(ex)
 
 model_manager = Qwen2_VQA()
