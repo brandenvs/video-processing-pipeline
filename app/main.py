@@ -1,9 +1,8 @@
 import shutil
 from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse
-import psycopg2
 from fastapi import status
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, UploadFile
 
 from pydantic import BaseModel
 from typing import Optional
@@ -50,7 +49,7 @@ app.include_router(document_flow.router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200"], 
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
