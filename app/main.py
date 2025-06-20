@@ -9,8 +9,8 @@ from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import document_processing, document_flow #, video_processing TODO
-from routers import document_processing, audio_processing, video_processing
-from routers import video_processing
+from app.routers import document_processing, audio_processing, video_processing
+from app.routers import video_processing
 
 
 class ProcessingResponse(BaseModel):

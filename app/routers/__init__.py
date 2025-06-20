@@ -1,10 +1,10 @@
-from routers import video_processing
-from routers import audio_processing
-from routers import model_management
-from routers import cli_args
-from routers import options
-from routers import database_service
-from routers import document_processing
+from app.routers import video_processing
+from app.routers import audio_processing
+from app.routers import model_management
+from app.routers import cli_args
+from app.routers import options
+from app.routers import database_service
+from app.routers import document_processing
 
 
 ROUTES = {

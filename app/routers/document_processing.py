@@ -22,9 +22,9 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 # Import the DB configuration from the original project
-from routers.database_service import DB_CONFIG, Db_helper
+from app.routers.database_service import DB_CONFIG, Db_helper
 
-from routers import model_management as mm
+from app.routers import model_management as mm
 
 
 def normalize_field_name(field_name: str) -> str:

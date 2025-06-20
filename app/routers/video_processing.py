@@ -15,7 +15,7 @@ import torch
 import gc
 import asyncio
 import urllib
-from routers.database_service import Db_helper
+from app.routers.database_service import Db_helper
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig # type: ignore
 import tempfile
 
@@ -28,7 +28,7 @@ import subprocess
 # )
 from qwen_vl_utils import process_vision_info
 
-from routers import model_management as mm
+from app.routers import model_management as mm
 
 from fastapi import APIRouter, HTTPException, UploadFile
 
