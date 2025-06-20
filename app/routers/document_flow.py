@@ -18,6 +18,7 @@ import re
 import logging
 from typing import Optional, List, Dict
 from pydantic import BaseModel
+import urllib
 from app.routers.document_processing import QwenDocumentIntegrator, normalize_field_name, convert_to_human_readable_label, BaseProcessor
 
 class DocumentFlowRequest(BaseProcessor):
