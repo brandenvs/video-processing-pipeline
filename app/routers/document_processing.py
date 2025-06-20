@@ -1,4 +1,3 @@
-﻿# Fix corrupted file - replace the last section with proper code
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 import os
@@ -20,9 +19,6 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-# Import the DB configuration from the original project
-from app.routers.database_service import DB_CONFIG, Db_helper
 
 from app.routers import model_management as mm
 
