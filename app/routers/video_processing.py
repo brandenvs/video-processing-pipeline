@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import time
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 import uuid
 from pydantic import BaseModel
 import torch
@@ -54,7 +54,7 @@ class BaseProcessor(BaseModel):
   max_tokens: Optional[int] = 512
   model_id: Optional[str] = "qwen/Qwen2.5-VL-3B-Instruct"
   source_path: str
-  input_schema: Dict[str, FieldDefinition]
+  input_schema: Any
 
 router = APIRouter()
 
@@ -115,10 +115,16 @@ async def process_video(request_body: BaseProcessor):
   [os.remove(os.path.join('segments', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
   [os.remove(os.path.join('audio', f)) for f in os.listdir('audio') if os.path.isfile(os.path.join('audio', f))]
   
+  # Combine filtering and conversion
+  structured_output= {
+      item['sequence_no']: item 
+      for item in processed_video_response 
+      if item is not None
+  }
   return {
     "status": "success",
     "scene_detection_response": scene_detection_response,
-    "processed_video_response": processed_video_response
+    "structured_output": structured_output
   }
 
 def get_mean_content_val(stats_file: str) -> float:
@@ -364,10 +370,11 @@ class Qwen2_VQA:
     
     fields_info = {}
     for field_name, field_def in input_schema.items():
-        fields_info[field_name] = {
-            "label": field_def.label,
-            "value": "[Generated Value Based on the video analysis]",
-        }
+      print(field_name, field_def)
+      fields_info[field_name] = {
+        "label": field_def['label'],
+        "value": "[Generated Value Based on the video analysis]",
+      }
     schema_str = json.dumps(fields_info, indent=2)
     print('schema_str', schema_str)
 
