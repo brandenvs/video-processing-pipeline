@@ -11,6 +11,7 @@ from pydantic import BaseModel
 import urllib.request
 import json
 import re
+import time
 
 import torch
 from routers import model_management as mm
@@ -97,11 +98,10 @@ class Qwen2_VQA:
     # MARK: Precision
     if mm.should_use_fp16(self.device):
       self.dtype = torch.float16
-    elif mm.should_use_fp16(self.device):
-      self.dtype = torch.float16
     else:
       self.dtype = torch.float32
 
+    # Optimize memory usage with 4-bit quantization for non-float16 models
     if self.dtype != torch.float16:
       quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -112,13 +112,18 @@ class Qwen2_VQA:
     else:
       quantization_config = None
 
-    self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-      self.model_checkpoint,
-      torch_dtype=self.dtype,
-      attn_implementation="eager",
-      device_map=self.device,
-      quantization_config=quantization_config,
-    )
+    # Load model with optimized configuration
+    print(f"Loading model with dtype: {self.dtype} on device: {self.device}")
+    
+    # Use context manager to ensure efficient memory handling
+    with torch.cuda.amp.autocast(enabled=self.dtype==torch.float16):
+      self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        self.model_checkpoint,
+        torch_dtype=self.dtype,
+        attn_implementation="flash_attention_2" if torch.cuda.get_device_capability()[0] >= 8 else "eager",
+        device_map=self.device,
+        quantization_config=quantization_config,
+      )
 
     self.processor = AutoProcessor.from_pretrained(
       self.model_checkpoint,
@@ -162,150 +167,104 @@ class Qwen2_VQA:
     # Fallback: If we can't extract valid JSON, return the raw text
     return {"raw_text": text}
 
-  def _identify_document_type(self, source_path: str) -> str:
-    """Identify the type of document from its content"""
-    if not self._model_loaded:
-      print('>>> Loading model into memory for document type identification')
-      self.load_model("qwen/Qwen2.5-VL-3B-Instruct")
-      
-    # Create messages asking specifically for document type
-    type_detection_messages = [
-      {
-        "role": "system",
-        "content": "You are an expert document classifier. Examine this document and identify its type.",
-      },
-      {
-        "role": "user",
-        "content": [
-          {"type": "image", "image": source_path},
-          {"type": "text", "text": "What type of document is this? Respond with a single specific type like 'incident_report', 'patrol_report', 'security_form', 'invoice', etc."},
-        ],
-      },
-    ]
-    
-    # Process messages to identify document type
-    inputs = self.processor.apply_chat_template(
-      type_detection_messages,
-      add_generation_prompt=True,
-      tokenize=True,
-      return_tensors="pt"
-    ).to(self.device)
-    
-    # Generate response for document type
-    with torch.no_grad():
-      outputs = self.model.generate(
-        inputs,
-        max_new_tokens=128,  # Shorter response for document type
-        do_sample=False,
-      )
-    
-    # Decode response
-    type_response = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-    
-    # Clean and normalize the document type
-    doc_type = type_response.lower().strip()
-    
-    # Extract just the document type, removing any explanation
-    simple_type_match = re.search(r'([a-z_]+_?report|[a-z_]+_?form|[a-z_]+_?invoice|[a-z_]+_?document)', doc_type)
-    if simple_type_match:
-        return simple_type_match.group(1)
-    
-    # If no specific pattern found, take the first word or default to generic document
-    words = re.findall(r'\b[a-z_]+\b', doc_type)
-    if words:
-        return words[0]
-    else:
-        return "generic_document"
-
   def inference(self, system_prompt: str, max_token: int, model_id: str, source_path: str) -> Dict[str, Any]:
+    """
+    Optimized document processing using a single model call to handle both document 
+    type detection and content extraction.
+    """
+    start_time = time.time()
+    
     if not self._model_loaded:
       print('>>> Loading model into memory')
       self.load_model(model_id)
     
-    # First, identify the document type
-    document_type = self._identify_document_type(source_path)
+    # Create a single comprehensive prompt that handles document type detection and content extraction
+    combined_prompt = f"""
+    You are an expert document analyzer. Your task is to:
+
+    1. Identify the document type (e.g., incident_report, invoice, form, etc.)
+    2. Extract all information from the document in a structured JSON format
+    3. Process the information according to these instructions: {system_prompt}
+
+    IMPORTANT: 
+    - Your response must be a valid JSON object
+    - Include a "document_type" field that identifies the type of document
+    - Include all visible fields and their values from the document
+    - If a field has no value, include it with an empty string
+    - Use appropriate data types for values (strings, numbers, arrays, etc.)
+    - Organize information logically and hierarchically when appropriate
+    """
     
-    # Step 1: First analyze the document to determine structure
-    analyze_messages = [
+    # Create a single message for processing
+    messages = [
       {
         "role": "system",
-        "content": "You are an expert document analyzer. Examine this document and provide a complete structured JSON output of all information present in the document. Include all fields and content visible in the document.",
+        "content": combined_prompt,
       },
       {
         "role": "user",
         "content": [
           {"type": "image", "image": source_path},
-          {"type": "text", "text": "Analyze this document and output a comprehensive JSON structure with all visible fields and their values. If a field has no value, include it with an empty string."},
+          {"type": "text", "text": "Analyze this document and provide a comprehensive JSON structure with document type and all content."},
         ],
       },
     ]
     
-    # Process the analyze messages
-    inputs = self.processor.apply_chat_template(
-      analyze_messages,
-      add_generation_prompt=True,
-      tokenize=True,
-      return_tensors="pt"
-    ).to(self.device)
+    # Process the messages
+    print("Processing document with combined prompt...")
     
-    # Generate response for document analysis
+    # Use torch.no_grad to optimize memory usage during inference
     with torch.no_grad():
-      outputs = self.model.generate(
-        inputs,
-        max_new_tokens=max_token,
-        do_sample=False,
-      )
-    
-    # Decode and extract the structured response
-    analysis_text = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-    
-    # Extract JSON from analysis
-    extracted_data = self._extract_json_from_text(analysis_text)
-    
-    # Add the document type tag
-    extracted_data["tag"] = document_type
-    
-    # Step 2: Process the extracted information with the user's system_prompt for customization
-    if system_prompt and system_prompt != "Analyze this document and extract all key information as a structured JSON output":
-      # Extract initial JSON from analysis
-      initial_json = extracted_data
-      
-      # Use the system_prompt to further process or customize the output
-      custom_messages = [
-        {
-          "role": "system",
-          "content": f"You are an expert document processor. Use the following JSON data extracted from a document and refine it according to these instructions: {system_prompt}",
-        },
-        {
-          "role": "user",
-          "content": f"Here's the extracted document data: {json.dumps(initial_json)}. Process this data according to the instructions and return a refined JSON output. IMPORTANT: Make sure to preserve the 'tag' field that identifies the document type.",
-        },
-      ]
-      
       inputs = self.processor.apply_chat_template(
-        custom_messages,
+        messages,
         add_generation_prompt=True,
         tokenize=True,
         return_tensors="pt"
       ).to(self.device)
       
-      with torch.no_grad():
-        outputs = self.model.generate(
-          inputs,
-          max_new_tokens=max_token,
-          do_sample=False,
-        )
-      
-      final_response = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-      result = self._extract_json_from_text(final_response)
-      
-      # Ensure the tag is preserved in the final result
-      if "tag" not in result:
-        result["tag"] = document_type
+      # Generate response with optimized settings
+      outputs = self.model.generate(
+        inputs,
+        max_new_tokens=max_token,
+        do_sample=False,
+        # Additional optimization parameters
+        temperature=0.1,  # Lower temperature for more deterministic outputs
+        repetition_penalty=1.1,  # Slight penalty to avoid repetitions
+      )
+    
+    # Decode and extract the structured response
+    response_text = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+    
+    # Extract JSON from response
+    result = self._extract_json_from_text(response_text)
+    
+    # Add processing time for monitoring
+    end_time = time.time()
+    result["processing_time_seconds"] = round(end_time - start_time, 2)
+    
+    # Ensure document_type is always included
+    if "document_type" not in result and "tag" not in result:
+        # Try to infer document type from result keys if missing
+        possible_types = ["report", "form", "invoice", "letter", "document"]
+        for key in result.keys():
+            for doc_type in possible_types:
+                if doc_type in key.lower():
+                    result["document_type"] = doc_type
+                    break
+            if "document_type" in result:
+                break
         
-      return result
-    else:
-      return extracted_data
+        if "document_type" not in result:
+            result["document_type"] = "document"
+    
+    # For backward compatibility
+    if "document_type" in result and "tag" not in result:
+        result["tag"] = result["document_type"]
+    elif "tag" in result and "document_type" not in result:
+        result["document_type"] = result["tag"]
+    
+    print(f"Document processed in {result['processing_time_seconds']} seconds")
+    return result
 
 
 model_manager = Qwen2_VQA()
