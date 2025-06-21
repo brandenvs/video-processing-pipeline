@@ -109,32 +109,25 @@ async def process_video(request_body: BaseProcessor):
   }
   print('Inference Object', infer_obj)
   process_video = functools.partial(model_manager.inference_helper, **infer_obj)
-  processed_video_response = await loop.run_in_executor(executor, process_video)
+  processed_video_response, finalStructuredOutput = await loop.run_in_executor(executor, process_video)
   
   # Cleanup for next video ...
   [os.remove(os.path.join('segments', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
   [os.remove(os.path.join('audio', f)) for f in os.listdir('audio') if os.path.isfile(os.path.join('audio', f))]
-  
-  # Combine filtering and conversion
+ 
   structured_outputs= {
-      item['sequence_no']: item 
-      for item in processed_video_response 
-      if item is not None
+    item['sequence_no']: item 
+    for item in processed_video_response 
+    if item is not None
   }
-  
-  
+
   return {
     "status": "success",
     "scene_detection_response": scene_detection_response,
-    "structured_output": structured_outputs
+    "structured_output": structured_outputs,
+    "finalStructuredOutput": finalStructuredOutput
   }
-
-def final_structured_output(structured_outputs: list, input_schema: str):
-  print('structured_outputs', structured_outputs)
-  print('input_schema', input_schema)
-  join_structured_outputs = '---\n'.join(structured_outputs)
-  print(join_structured_outputs)
-  
+ 
 
 def get_mean_content_val(stats_file: str) -> float:
   content_vals = []
@@ -334,6 +327,90 @@ class Qwen2_VQA:
 
     self._model_loaded = True
 
+  def process_final_schema(self, input_schema, responses):
+    data = [item for item in responses if item is not None]
+    input_data = json.dumps(data, indent=2)
+    
+    messages = [
+      {
+          "role": "system",
+          "content": f"""You are an expert data analyst specializing in video analysis aggregation. Your task is to synthesize multiple video sequence analyses into a single, coherent final report.
+
+ANALYSIS APPROACH:
+1. Review all sequence data for patterns and consistency
+2. Resolve conflicts by prioritizing most detailed/confident observations
+3. Aggregate temporal information across sequences
+4. Generate comprehensive summary maintaining data integrity
+
+OUTPUT REQUIREMENTS:
+- Must conform exactly to this JSON schema: {input_schema}
+- Use "Yes"/"No" for boolean fields, never "Not applicable" 
+- Consolidate contradictory evidence logically
+- Prioritize positive detections over negative ones when evidence exists
+- Include confidence indicators where multiple sequences conflict
+
+CONFLICT RESOLUTION RULES:
+- If any sequence detects weapons/suspects/plates, mark as detected
+- Combine witness and civilian counts from all sequences
+- Use most detailed suspect descriptions available
+- Aggregate all unique license plate observations"""
+      },
+      {
+          "role": "user", 
+          "content": f"""Analyze and synthesize the following video sequence data into the final schema:
+
+SEQUENCE DATA ({len(data)} sequences analyzed):
+{input_data}
+
+Requirements:
+- Synthesize information across all {len(data)} video sequences
+- Resolve any conflicting observations logically
+- Generate a comprehensive final analysis
+- Return ONLY valid JSON matching the required schema
+
+Generate the final consolidated analysis:"""
+      }
+  ]
+    system_prompts = self.processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    image_inputs, video_inputs = process_vision_info(messages)
+
+    check_memory(self.device)
+
+    print('Preparing inputs ....')
+    inputs = self.processor(
+      text=system_prompts,
+      videos=video_inputs,
+      images=image_inputs,
+      padding=True,
+      return_tensors="pt",
+    )
+    inputs =  inputs.to(self.device)
+
+    print('>>> Inference: Generation of the output')
+    try:
+      outputs = self.model.generate(**inputs, max_new_tokens=2000)
+
+      generated_ids_trimmed = [
+        out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
+      ]
+
+      generated_response = self.processor.batch_decode(
+        generated_ids_trimmed,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+      )
+      print('>> PRE PROCESSED generated_response ', generated_response)
+      generated_response = self.process_generated_response(generated_response[0], 999)
+      print('>>> POST PROCESSED generated_response ', generated_response)
+      print(json.dumps(generated_response, indent=2))
+
+    except Exception as ex:
+      print(ex)
+    return generated_response
+
+      
   def inference_helper(self, model_id: str, system_prompt: str, max_tokens: int, input_schema: str, segments: list, stats_scene: list):
     responses = []
         
@@ -369,23 +446,20 @@ class Qwen2_VQA:
             for val in row.values():
               if isinstance(val, list):
                 batch_length = float(val[-1])
-                print(batch_length)
       responses.append(self.inference(segment_path, system_prompt, max_tokens, input_schema, seq, batch_length))
-    print(responses)
-    return responses
+    generated_response = self.process_final_schema(input_schema, responses)
+    return (responses, generated_response)
 
   def inference(self, segment_path: str, system_prompt: str, max_tokens: int, input_schema: str, seq: int, batch_length: str):
     start_time = time.time() # timer
     
     fields_info = {}
     for field_name, field_def in input_schema.items():
-      print(field_name, field_def)
       fields_info[field_name] = {
         "label": field_def['label'],
         "value": "[Generated Value Based on the video analysis]",
       }
     schema_str = json.dumps(fields_info, indent=2)
-    print('schema_str', schema_str)
 
     messages = [
       {
@@ -400,7 +474,7 @@ class Qwen2_VQA:
         ],
       },
     ]
-    print(messages)
+
     print('>>> Preparation for inference')
     system_prompts = self.processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True

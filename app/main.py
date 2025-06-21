@@ -8,10 +8,8 @@ from pydantic import BaseModel
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import document_processing, document_flow #, video_processing TODO
-from app.routers import document_processing, audio_processing, video_processing, document_process_v2
-from app.routers import video_processing
-
+from app.routers import audio_processing, video_processing
+from app.routers import document_process_v2, document_flow
 
 class ProcessingResponse(BaseModel):
     processor: str
@@ -34,6 +32,10 @@ async def lifespan(app: FastAPI):
     if hasattr(audio_processing, "executor") and audio_processing.executor:
         audio_processing.executor.shutdown(wait=True)
 
+    # document processing
+    if hasattr(document_process_v2, "executor") and document_process_v2.executor:
+        document_process_v2.executor.shutdown(wait=True)
+
 
 app = FastAPI(
     title="ADP Video Pipeline API",
@@ -43,8 +45,8 @@ app = FastAPI(
 )
 app.include_router(video_processing.router)
 app.include_router(audio_processing.router)
-app.include_router(document_processing.router)
 app.include_router(document_process_v2.router)
+# app.include_router(document_flow.router)
 
 app.add_middleware(
     CORSMiddleware,

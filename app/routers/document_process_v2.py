@@ -10,21 +10,57 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 import urllib.request
 import json
-import re
+import time
+import tempfile
+import logging
+from pypdf import PdfReader
+from qwen_vl_utils import process_vision_info
+from pdf2image import convert_from_path
+import shutil
 
 import torch
 from app.routers import model_management as mm
 
 from app.routers.video_processing import FieldDefinition
 import functools
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig # type: ignore
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig
 
 
 class BaseProcessor(BaseModel):
   system_prompt: Optional[str] = "Analyze this document and extract all key information as a structured JSON output"
   max_tokens: Optional[int] = 1024
   model_id: Optional[str] = "qwen/Qwen2.5-VL-3B-Instruct"
+  dpi: Optional[int] = 150
   source_path: str
+
+
+def normalize_field_name(field_name: str) -> str:
+    if not field_name:
+        return ""
+    
+    field_name = field_name.lower().strip()
+    field_name = " ".join(field_name.split())
+    field_name = field_name.replace(" ", "_")
+    return field_name
+
+def convert_to_human_readable_label(field_name: str) -> str:
+    if not field_name:
+        return ""
+    
+    readable = field_name.replace('_', ' ')
+    readable = ' '.join(word.capitalize() for word in readable.split())
+    
+    return readable
+
+def convert_pdf_to_images(pdf_path: str, dpi: int = 150) -> List[tuple]:
+  image_paths = convert_from_path(
+    pdf_path,
+    dpi=dpi,
+    fmt="jpeg",
+    output_folder='pdf_pages', # MARK Todo
+    paths_only=True
+  )
+  return image_paths
 
 router = APIRouter()
 
@@ -34,7 +70,7 @@ router = APIRouter(
   responses={404: {"description": "Not found"}},
 )
 
-executor = ThreadPoolExecutor(max_workers=4)
+executor = ThreadPoolExecutor(max_workers=2)
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -49,16 +85,17 @@ async def process_document(request_body: BaseProcessor):
   print(request_body)
   
   filename = f'/home/ubuntu/adp-video-pipeline/source_data/{uuid.uuid4()}document.pdf'
-  result = urllib.request.urlretrieve(request_body.source_path, filename)
+  source_path, res = urllib.request.urlretrieve(request_body.source_path, filename)
   
   loop = asyncio.get_running_loop()  
-  if (result):
+  if (source_path):
     process_document = functools.partial(
       model_manager.inference, 
-      request_body.system_prompt or "Analyze this document and extract all key information as a structured JSON output",
-      request_body.max_tokens or 1024,
-      request_body.model_id or "qwen/Qwen2.5-VL-3B-Instruct",
-      filename
+      request_body.system_prompt,
+      request_body.max_tokens,
+      request_body.model_id,
+      source_path,
+      request_body.dpi
     )    
     processed_document_response = await loop.run_in_executor(executor, process_document)
 
@@ -94,10 +131,7 @@ class Qwen2_VQA:
       from huggingface_hub import snapshot_download
       snapshot_download(repo_id=model_id, local_dir=self.model_checkpoint)
 
-    # MARK: Precision
     if mm.should_use_fp16(self.device):
-      self.dtype = torch.float16
-    elif mm.should_use_fp16(self.device):
       self.dtype = torch.float16
     else:
       self.dtype = torch.float32
@@ -112,200 +146,303 @@ class Qwen2_VQA:
     else:
       quantization_config = None
 
-    self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-      self.model_checkpoint,
-      torch_dtype=self.dtype,
-      attn_implementation="eager",
-      device_map=self.device,
-      quantization_config=quantization_config,
-    )
+    print(f"Loading model with dtype: {self.dtype} on device: {self.device}")
+    
+    with torch.cuda.amp.autocast(enabled=self.dtype==torch.float16):
+      self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        self.model_checkpoint,
+        torch_dtype=self.dtype,
+        attn_implementation="flash_attention_2" if torch.cuda.get_device_capability()[0] >= 8 else "eager",
+        device_map=self.device,
+        quantization_config=quantization_config,
+      )
 
     self.processor = AutoProcessor.from_pretrained(
       self.model_checkpoint,
       min_pixels = 256*28*28,
-      max_pixels = 1280*28*28,
+      max_pixels = 1024*28*28,
     )
     
     self.tokenizer = AutoTokenizer.from_pretrained(self.model_checkpoint)
     self._model_loaded = True
 
-  def _extract_json_from_text(self, text: str) -> Dict:
-    """Extract JSON object from text response"""
-    # Try to find JSON structure in response
-    json_pattern = re.search(r'\{[\s\S]*\}', text, re.DOTALL)
-    if json_pattern:
-        try:
-            json_str = json_pattern.group(0)
-            # Handle potential trailing text by finding last closing brace
-            if json_str.count('{') != json_str.count('}'):
-                # Find position of the last complete JSON object
-                open_braces = 0
-                for i, char in enumerate(json_str):
-                    if char == '{':
-                        open_braces += 1
-                    elif char == '}':
-                        open_braces -= 1
-                        if open_braces == 0:
-                            json_str = json_str[:i+1]
-                            break
-            
-            return json.loads(json_str)
-        except json.JSONDecodeError:
-            # If JSONDecodeError, try more aggressive cleaning
-            try:
-                # Remove any trailing or leading text outside of braces
-                cleaner_json = re.search(r'(\{.*\})', json_str, re.DOTALL).group(1)
-                return json.loads(cleaner_json)
-            except (json.JSONDecodeError, AttributeError):
-                pass
-    
-    # Fallback: If we can't extract valid JSON, return the raw text
-    return {"raw_text": text}
+  def process_generated_response(self, generated_response: str, sequence_no: int):
+    print(f'GENERATED RESPONSE FOR BATCH: {sequence_no}', generated_response)
+    if generated_response.startswith("```json"):
+      try:
+        lines = generated_response.strip().splitlines()
+        json_content = "\n".join(lines[1:-1])
 
-  def _identify_document_type(self, source_path: str) -> str:
-    """Identify the type of document from its content"""
-    if not self._model_loaded:
-      print('>>> Loading model into memory for document type identification')
-      self.load_model("qwen/Qwen2.5-VL-3B-Instruct")
-      
-    # Create messages asking specifically for document type
-    type_detection_messages = [
+        json_response = json.loads(json_content)
+        spread_response = {**json_response, **{"sequence_no": sequence_no}}
+        return spread_response
+
+      except json.JSONDecodeError as e:
+        print(f"JSON decode error: {e}")
+        return {
+          "error": f"JSON parsing error: {str(e)}",
+          "sequence_no": sequence_no
+        } 
+
+    try:
+      json_response = json.loads(generated_response)
+      spread_response = {**json_response, **{"sequence_no": sequence_no}}
+      return spread_response
+    except json.JSONDecodeError as e:
+      print(f"JSON decode error: {e}")
+      return {
+        "error": f"JSON parsing error: {str(e)}",
+        "sequence_no": sequence_no,
+        "raw_sample": generated_response
+      }
+
+  def process_page(self, image_path: str, system_prompt: str, max_token: int, page_num: int) -> Dict[str, Any]:
+    page_specific_prompt = """
+    You are an expert document analyzer. Examine this document and provide a complete structured JSON output of all information present in the document. 
+    Use the following JSON Structured Output Schema for each field: { label: string; field_type: string; description: string; required: boolean }
+    """
+    messages = [
       {
         "role": "system",
-        "content": "You are an expert document classifier. Examine this document and identify its type.",
+        "content": page_specific_prompt,
       },
       {
         "role": "user",
         "content": [
-          {"type": "image", "image": source_path},
-          {"type": "text", "text": "What type of document is this? Respond with a single specific type like 'incident_report', 'patrol_report', 'security_form', 'invoice', etc."},
+          {"type": "image", "image": image_path},
+          {"type": "text", "text": system_prompt},
         ],
       },
-    ]
+    ]    
     
-    # Process messages to identify document type
-    inputs = self.processor.apply_chat_template(
-      type_detection_messages,
-      add_generation_prompt=True,
-      tokenize=True,
-      return_tensors="pt"
-    ).to(self.device)
-    
-    # Generate response for document type
-    with torch.no_grad():
-      outputs = self.model.generate(
-        inputs,
-        max_new_tokens=128,  # Shorter response for document type
-        do_sample=False,
-      )
-    
-    # Decode response
-    type_response = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-    
-    # Clean and normalize the document type
-    doc_type = type_response.lower().strip()
-    
-    # Extract just the document type, removing any explanation
-    simple_type_match = re.search(r'([a-z_]+_?report|[a-z_]+_?form|[a-z_]+_?invoice|[a-z_]+_?document)', doc_type)
-    if simple_type_match:
-        return simple_type_match.group(1)
-    
-    # If no specific pattern found, take the first word or default to generic document
-    words = re.findall(r'\b[a-z_]+\b', doc_type)
-    if words:
-        return words[0]
-    else:
-        return "generic_document"
+    image_inputs, video_inputs = process_vision_info(messages)  
 
-  def inference(self, system_prompt: str, max_token: int, model_id: str, source_path: str) -> Dict[str, Any]:
-    if not self._model_loaded:
-      print('>>> Loading model into memory')
-      self.load_model(model_id)
-    
-    # First, identify the document type
-    document_type = self._identify_document_type(source_path)
-    
-    # Step 1: First analyze the document to determine structure
-    analyze_messages = [
-      {
-        "role": "system",
-        "content": "You are an expert document analyzer. Examine this document and provide a complete structured JSON output of all information present in the document. Include all fields and content visible in the document.",
-      },
-      {
-        "role": "user",
-        "content": [
-          {"type": "image", "image": source_path},
-          {"type": "text", "text": "Analyze this document and output a comprehensive JSON structure with all visible fields and their values. If a field has no value, include it with an empty string."},
-        ],
-      },
-    ]
-    
-    # Process the analyze messages
-    inputs = self.processor.apply_chat_template(
-      analyze_messages,
+    system_prompts = self.processor.apply_chat_template(
+      messages,
       add_generation_prompt=True,
-      tokenize=True,
+      tokenize=False,
       return_tensors="pt"
-    ).to(self.device)
-    
-    # Generate response for document analysis
-    with torch.no_grad():
-      outputs = self.model.generate(
-        inputs,
-        max_new_tokens=max_token,
-        do_sample=False,
-      )
-    
-    # Decode and extract the structured response
-    analysis_text = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-    
-    # Extract JSON from analysis
-    extracted_data = self._extract_json_from_text(analysis_text)
-    
-    # Add the document type tag
-    extracted_data["tag"] = document_type
-    
-    # Step 2: Process the extracted information with the user's system_prompt for customization
-    if system_prompt and system_prompt != "Analyze this document and extract all key information as a structured JSON output":
-      # Extract initial JSON from analysis
-      initial_json = extracted_data
+    )
       
-      # Use the system_prompt to further process or customize the output
-      custom_messages = [
-        {
-          "role": "system",
-          "content": f"You are an expert document processor. Use the following JSON data extracted from a document and refine it according to these instructions: {system_prompt}",
-        },
-        {
-          "role": "user",
-          "content": f"Here's the extracted document data: {json.dumps(initial_json)}. Process this data according to the instructions and return a refined JSON output. IMPORTANT: Make sure to preserve the 'tag' field that identifies the document type.",
-        },
-      ]
+    inputs = self.processor(
+      text=system_prompts,
+      images=image_inputs,
+      padding=True,
+      return_tensors="pt",
+    )
+    inputs = inputs.to(self.device)
       
-      inputs = self.processor.apply_chat_template(
-        custom_messages,
-        add_generation_prompt=True,
-        tokenize=True,
-        return_tensors="pt"
-      ).to(self.device)
+    outputs = self.model.generate(
+      **inputs,
+      max_new_tokens=max_token,
+      do_sample=False,
+      temperature=0.1,
+      repetition_penalty=1.1,
+    )
+    
+    generated_ids_trimmed = [
+      out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
+    ]
+
+    generated_response = self.tokenizer.batch_decode(generated_ids_trimmed, skip_special_tokens=True)
+    
+    generated_response = self.process_generated_response(generated_response[0], page_num)
+    return {
+      **generated_response,
+      "page_number": page_num
+    }
+
+  def inference(self, system_prompt: str, max_token: int, model_id: str, source_path: str, dpi: int = 150) -> List:
+    start_time = time.time()
+    page_paths = []
+    page_results = []
+
+    try:
+      if not self._model_loaded:
+        print('>>> Loading model into memory')
+        self.load_model(model_id)
       
-      with torch.no_grad():
-        outputs = self.model.generate(
-          inputs,
-          max_new_tokens=max_token,
-          do_sample=False,
-        )
-      
-      final_response = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-      result = self._extract_json_from_text(final_response)
-      
-      # Ensure the tag is preserved in the final result
-      if "tag" not in result:
-        result["tag"] = document_type
+      if source_path.endswith('.pdf'):
+        page_paths = convert_pdf_to_images(source_path, dpi=dpi)
+
+        if not page_paths:
+          return {"error": "Failed to convert PDF to images", "processing_time_seconds": 0}
+
+      for idx, image_path in enumerate(page_paths):          
+        result = self.process_page(image_path, system_prompt, max_token, idx + 1)
+        print(json.dumps(result, indent=2))
+        page_results.append(result)
+
+      # Clean up PDF images
+      [os.remove(os.path.join('pdf_pages', f)) for f in os.listdir('pdf_pages') if os.path.isfile(os.path.join('pdf_pages', f))]
+
+      joined_page_results = [item for item in page_results if item is not None]
+      return joined_page_results
+
+    except Exception as e:
+      logging.exception(f"Error processing document: {e}")
+      return {"error": str(e), "processing_time_seconds": round(time.time() - start_time, 2)}
+
+  def _extract_document_text(self, file_path: str) -> str:
+    if not os.path.exists(file_path) or not file_path.lower().endswith('.pdf'):
+        return ""
         
-      return result
-    else:
-      return extracted_data
+    try:
+        with open(file_path, 'rb') as f:
+            pdf = PdfReader(f)
+            text = ""
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n\n"
+            return text
+    except Exception as e:
+        logging.error(f"Error extracting text from PDF: {e}")
+        return ""
+  
+  def _extract_fields_with_ai(self, document_text: str, document_type: str = "form") -> List[str]:
+    prompt = f"""
+    Analyze this {document_type} document text and identify all form field names. 
+    Return ONLY the normalized field names (snake_case) as a Python list.
+    Example: ["first_name", "last_name", "date_of_birth"]
+    
+    Document text:
+    {document_text[:4000]}
+    """
+    
+    if not self._model_loaded:
+        self.load_model("qwen/Qwen2.5-VL-3B-Instruct")
+        
+    try:
+        messages = [
+            {"role": "system", "content": "You are a document field extraction assistant. Extract form fields from documents."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        inputs = self.processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_tensors="pt"
+        ).to(self.device)
+        
+        with torch.no_grad():
+            outputs = self.model.generate(
+                inputs,
+                max_new_tokens=500,
+                do_sample=False,
+                temperature=0.1
+            )
+        
+        response_text = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+        
+        try:
+            start_idx = response_text.find('[')
+            end_idx = response_text.rfind(']')
+            if start_idx >= 0 and end_idx > start_idx:
+                list_text = response_text[start_idx:end_idx+1]
+                fields_list = json.loads(list_text.replace("'", '"'))
+                if isinstance(fields_list, list):
+                    return fields_list
+        except:
+            pass
+        
+        return []
+        
+    except Exception as e:
+        logging.error(f"Error extracting fields with AI: {e}")
+        return []
+
+  def _extract_json_from_text(self, text: str) -> Dict:
+    try:
+        start_idx = text.find('{')
+        if start_idx == -1:
+            return {"raw_text": text}
+        
+        open_braces = 0
+        json_end = start_idx
+        
+        for i in range(start_idx, len(text)):
+            if text[i] == '{':
+                open_braces += 1
+            elif text[i] == '}':
+                open_braces -= 1
+                if open_braces == 0:
+                    json_end = i + 1
+                    break
+        
+        if open_braces != 0:
+            return {"raw_text": text}
+            
+        json_str = text[start_idx:json_end]
+        return json.loads(json_str)
+    except:
+        return {"raw_text": text}
+  
+  def _combine_page_results(self, page_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not page_results:
+      return {"error": "No page results to combine"}
+    
+    combined = {
+      "document_type": self._determine_document_type(page_results),
+      "pages": page_results,
+      "combined_content": {}
+    }
+    
+    first_page = page_results[0]
+    for key, value in first_page.items():
+      if key not in ["page_number", "raw_text", "processing_time_seconds"] and key not in combined:
+        combined[key] = value
+    
+    all_fields = {}
+    
+    for page in page_results:
+      page_num = page.get("page_number", 0)
+      
+      for key, value in page.items():
+        if key in ["page_number", "document_type", "raw_text", "processing_time_seconds"]:
+          continue
+          
+        if key not in all_fields:
+          all_fields[key] = {
+            "value": value,
+            "sources": [page_num]
+          }
+        else:
+          if all_fields[key]["value"] != value and value:
+            if isinstance(all_fields[key]["value"], list):
+              if value not in all_fields[key]["value"]:
+                all_fields[key]["value"].append(value)
+            else:
+              all_fields[key]["value"] = [all_fields[key]["value"], value]
+            
+          if page_num not in all_fields[key]["sources"]:
+            all_fields[key]["sources"].append(page_num)
+    
+    for key, data in all_fields.items():
+      combined["combined_content"][key] = data["value"]
+    
+    return combined
+  
+  def _determine_document_type(self, page_results: List[Dict[str, Any]]) -> str:
+    type_counts = {}
+    
+    for page in page_results:
+      doc_type = page.get("document_type", "")
+      if not doc_type and "tag" in page:
+        doc_type = page.get("tag", "")
+      
+      if doc_type:
+        type_counts[doc_type] = type_counts.get(doc_type, 0) + 1
+    
+    if type_counts:
+      most_common = max(type_counts.items(), key=lambda x: x[1])[0]
+      return most_common
+    
+    return "document"
+
+class QwenDocumentIntegrator(Qwen2_VQA):
+    pass
 
 
 model_manager = Qwen2_VQA()
