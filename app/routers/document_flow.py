@@ -39,18 +39,18 @@ def download_file_from_url(url, output_path=None):
     response = requests.get(url, stream=True)
     response.raise_for_status()
     
-#     with open(output_path, 'wb') as f:
-#         for chunk in response.iter_content(chunk_size=8192):
-#             f.write(chunk)
+    with open(output_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
     
-#     print(f"Downloaded URL to: {output_path}")
-#     return output_path
+    print(f"Downloaded URL to: {output_path}")
+    return output_path
 
-# router = APIRouter(
-#     prefix="/document-flow",
-#     tags=["document-flow"],
-#     responses={404: {"description": "Not found"}},
-# )
+router = APIRouter(
+    prefix="/document-flow",
+    tags=["document-flow"],
+    responses={404: {"description": "Not found"}},
+)
 
 def detect_field_type(field_name: str) -> str:
     """Detect field type based on field name patterns"""
@@ -130,11 +130,11 @@ async def extract_document_fields(
             raise HTTPException(status_code=404, detail=f"File not found: {source_path}")
         temp_file_path = source_path
     
-#     if not temp_file_path.lower().endswith('.pdf'):
-#         raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    if not temp_file_path.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
     
-#     document_type = request_body.document_type or "form"
-#     client_id = request_body.client_id or "default"
+    document_type = request_body.document_type or "form"
+    client_id = request_body.client_id or "default"
     
     try:
         # Create document integrator and load model

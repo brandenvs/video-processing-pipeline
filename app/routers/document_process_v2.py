@@ -479,10 +479,11 @@ class Qwen2_VQA:
         ],
       },
     ]
+    
     system_prompts = self.processor.apply_chat_template(
-      analyze_messages, tokenize=False, add_generation_prompt=True
+      messages, tokenize=False, add_generation_prompt=True
     )
-    image_inputs, video_inputs = process_vision_info(analyze_messages)
+    image_inputs, video_inputs = process_vision_info(messages)
     
     # Process the messages
     print("Processing document with combined prompt...")
