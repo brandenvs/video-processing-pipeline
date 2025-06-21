@@ -1,3 +1,4 @@
+from routers import document_process_v2
 from routers import video_processing
 from routers import audio_processing
 from routers import model_management
@@ -14,5 +15,6 @@ ROUTES = {
     'CLIArgs': cli_args,
     'Options': options,
     'DatabaseService': database_service,
-    'DocumentProcessing': document_processing
+    'DocumentProcessing': document_processing,
+    'DocumentProcessingV2': document_process_v2
 }

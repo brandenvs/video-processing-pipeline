@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import document_processing, audio_processing, video_processing
+from routers import document_processing, audio_processing, video_processing, document_process_v2
 from routers import video_processing
 
 
@@ -43,7 +43,7 @@ app = FastAPI(
 app.include_router(video_processing.router)
 app.include_router(audio_processing.router)
 app.include_router(document_processing.router)
-
+app.include_router(document_process_v2.router)
 
 app.add_middleware(
     CORSMiddleware,
