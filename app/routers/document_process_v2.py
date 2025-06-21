@@ -30,13 +30,8 @@ class BaseProcessor(BaseModel):
   system_prompt: Optional[str] = "Analyze this document and extract all key information as a structured JSON output"
   max_tokens: Optional[int] = 1024
   model_id: Optional[str] = "qwen/Qwen2.5-VL-3B-Instruct"
-  source_path: str
-  document_type: Optional[str] = "form"
-  document_key: Optional[str] = None
-  client_id: Optional[str] = None
-  max_pages: Optional[int] = None
-  batch_size: Optional[int] = 3
   dpi: Optional[int] = 150
+  source_path: str
 
 
 def normalize_field_name(field_name: str) -> str:
@@ -90,16 +85,16 @@ async def process_document(request_body: BaseProcessor):
   print(request_body)
   
   filename = f'/home/ubuntu/adp-video-pipeline/source_data/{uuid.uuid4()}document.pdf'
-  result = urllib.request.urlretrieve(request_body.source_path, filename)
+  source_path, res = urllib.request.urlretrieve(request_body.source_path, filename)
   
   loop = asyncio.get_running_loop()  
-  if (result):
+  if (source_path):
     process_document = functools.partial(
       model_manager.inference, 
       request_body.system_prompt,
       request_body.max_tokens,
       request_body.model_id,
-      request_body.source_path,
+      source_path,
       request_body.dpi
     )    
     processed_document_response = await loop.run_in_executor(executor, process_document)
@@ -203,7 +198,7 @@ class Qwen2_VQA:
 
   def process_page(self, image_path: str, system_prompt: str, max_token: int, page_num: int) -> Dict[str, Any]:
     page_specific_prompt = """
-    You are an expert document analyzer. Examine this document and provide a complete structured JSON output of all information present in the document. Include all fields and content visible in the document.
+    You are an expert document analyzer. Examine this document and provide a complete structured JSON output of all information present in the document. 
     Use the following JSON Structured Output Schema for each field: { label: string; field_type: string; description: string; required: boolean }
     """
     messages = [
@@ -266,12 +261,9 @@ class Qwen2_VQA:
       if not self._model_loaded:
         print('>>> Loading model into memory')
         self.load_model(model_id)
-
-        pdf_file = f'/home/ubuntu/adp-video-pipeline/source_data/{uuid.uuid4()}document.pdf'
-        result = urllib.request.urlretrieve(source_path, pdf_file)
       
-      if pdf_file.lower().endswith('.pdf'):
-        page_paths = convert_pdf_to_images(pdf_file, dpi=dpi)
+      if source_path.endswith('.pdf'):
+        page_paths = convert_pdf_to_images(source_path, dpi=dpi)
 
         if not page_paths:
           return {"error": "Failed to convert PDF to images", "processing_time_seconds": 0}

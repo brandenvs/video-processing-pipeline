@@ -46,7 +46,7 @@ app = FastAPI(
 app.include_router(video_processing.router)
 app.include_router(audio_processing.router)
 app.include_router(document_process_v2.router)
-app.include_router(document_flow.router)
+# app.include_router(document_flow.router)
 
 app.add_middleware(
     CORSMiddleware,
