@@ -67,7 +67,7 @@ def check_memory(device=mm.get_torch_device):
   print(f"GPU memory checked: {free_mem_gb:.2f}GB available.")
   return (free_mem_gb, total_mem)
 
-@router.post("/process/")
+@router.post("/video/")
 async def process_video(request_body: BaseProcessor):
   print('request_body: ', request_body)
   loop = asyncio.get_running_loop()

@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import audio_processing, video_processing
-from app.routers import document_process_v2, document_flow
+from app.routers import document_process_v2
 
 class ProcessingResponse(BaseModel):
     processor: str
@@ -34,16 +34,17 @@ async def lifespan(app: FastAPI):
     if hasattr(document_process_v2, "executor") and document_process_v2.executor:
         document_process_v2.executor.shutdown(wait=True)
 
-
 app = FastAPI(
     title="ADP Video Pipeline API",
     description="API for processing video and audio for StadPrin",
     version="1.0.0",
     lifespan=lifespan,
 )
-app.include_router(video_processing.router)
-app.include_router(audio_processing.router)
-app.include_router(document_process_v2.router)
+
+app.include_router(video_processing.router) # process/video
+app.include_router(document_process_v2.router) # process/document
+
+app.include_router(audio_processing.router) # process/audio - TODO
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,16 +55,4 @@ app.add_middleware(
 )
 @app.get("/")
 async def root():
-    return {"message": "Video Processing Pipeline - StadPrin"}
-
-
-@app.post("/upload-video")
-async def upload_video(file: UploadFile=File(...)):
-    with open(f"uploads/{file.filename}", "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    return JSONResponse(status_code=200, content={"message": "success"})
-
-
-@app.get("/schema")
-async def process_document():
     return {"message": "Video Processing Pipeline - StadPrin"}

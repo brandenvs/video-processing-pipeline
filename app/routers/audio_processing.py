@@ -8,7 +8,6 @@ import time
 from typing             import Optional
 import concurrent
 from pydantic           import BaseModel
-from app.routers.database_service import Db_helper
 import librosa
 from transformers       import Qwen2AudioForConditionalGeneration, AutoProcessor, BitsAndBytesConfig # type: ignore
 from app.routers        import model_management as mm
@@ -69,15 +68,9 @@ async def process_audio(request_body: AudioProcessor):
     results = await loop.run_in_executor(executor, inference_task)
 
     analysis_ids = []
-    for analysis_data in results:
-        # Store in database
-        db_helper = Db_helper()
-        analysis_id = db_helper.audio_analysis(
-            analysis_data, source_path=request_body.source_path
-        )
 
-        if analysis_id:
-            analysis_ids.append(analysis_id)
+
+
 
     return {
         "status": "success",
