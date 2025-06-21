@@ -2,42 +2,28 @@ import csv
 import datetime
 import json
 import os
-import uuid
 import atexit
-from pathlib import Path
 import shutil
-import tempfile
 import time
-from typing import Any, Dict, Optional
 import uuid
-from pydantic import BaseModel
+import subprocess
 import torch
 import gc
 import asyncio
 import urllib
-from app.routers.database_service import Db_helper
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig # type: ignore
 import tempfile
+import functools
+from pathlib import Path
 
-import subprocess
-
-# from transformers import (
-#     Qwen2_5_VLForConditionalGeneration,
-#     AutoProcessor,
-#     BitsAndBytesConfig,
-# )
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig # type: ignore
 from qwen_vl_utils import process_vision_info
 
 from app.routers import model_management as mm
-
-from fastapi import APIRouter, HTTPException, UploadFile
-
+from fastapi import APIRouter
+from typing import Any, Optional
+from pydantic import BaseModel
 
 from concurrent.futures import ThreadPoolExecutor
-import atexit
-import functools
-
-from moviepy import VideoFileClip
 
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -47,7 +33,6 @@ class FieldDefinition(BaseModel):
     field_type: str
     description: str
     required: bool = False
-
 
 class BaseProcessor(BaseModel):
   system_prompt: Optional[str] = "Identify key data and fillout the given system schema"
@@ -128,7 +113,6 @@ async def process_video(request_body: BaseProcessor):
     "finalStructuredOutput": finalStructuredOutput
   }
  
-
 def get_mean_content_val(stats_file: str) -> float:
   content_vals = []
   
@@ -518,5 +502,6 @@ Generate the final consolidated analysis:"""
       return response
     except Exception as ex:
       print(ex)
+
 
 model_manager = Qwen2_VQA()

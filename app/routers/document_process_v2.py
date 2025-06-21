@@ -4,24 +4,21 @@ from concurrent.futures import ThreadPoolExecutor
 import gc
 import os
 from pathlib import Path
-from typing import Dict, Optional, List, Any, Union
+from typing import Dict, Optional, List, Any
 import uuid
 from fastapi import APIRouter
 from pydantic import BaseModel
 import urllib.request
 import json
 import time
-import tempfile
 import logging
 from pypdf import PdfReader
 from qwen_vl_utils import process_vision_info
 from pdf2image import convert_from_path
-import shutil
 
 import torch
 from app.routers import model_management as mm
 
-from app.routers.video_processing import FieldDefinition
 import functools
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor, BitsAndBytesConfig
 
@@ -97,12 +94,19 @@ async def process_document(request_body: BaseProcessor):
     )    
     processed_document_response = await loop.run_in_executor(executor, process_document)
     final_schema = join_sequences(processed_document_response)
-    print('Final Schema: ', final_schema)
-  return {
-    "status": "success",
-    "processed_document_response": processed_document_response,
-    "final_schema": final_schema
-  }
+  
+  if len(processed_document_response) > 0:
+    gc.collect()
+    return {
+      "status": "success",
+      "processed_document_response": processed_document_response,
+      "final_schema": final_schema
+    }
+  else:
+    return {
+      "status": "error",
+      "Message": "Something went wrong (～￣(OO)￣)ブ"
+    } 
 
 def join_sequences(sequences):
     combined = {}
@@ -112,6 +116,7 @@ def join_sequences(sequences):
         seq_copy.pop('sequence_no', None)
         combined.update(seq_copy)
     return combined
+
 
 class Qwen2_VQA:
   def __init__(self):
@@ -292,5 +297,6 @@ class Qwen2_VQA:
     except Exception as e:
       logging.exception(f"Error processing document: {e}")
       return {"error": str(e), "processing_time_seconds": round(time.time() - start_time, 2)}
+
 
 model_manager = Qwen2_VQA()
