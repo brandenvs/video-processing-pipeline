@@ -1,4 +1,4 @@
-from routers import document_process_v2
+from app.routers import document_process_v2
 from app.routers import video_processing
 from app.routers import audio_processing
 from app.routers import model_management
