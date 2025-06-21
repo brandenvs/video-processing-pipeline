@@ -116,16 +116,25 @@ async def process_video(request_body: BaseProcessor):
   [os.remove(os.path.join('audio', f)) for f in os.listdir('audio') if os.path.isfile(os.path.join('audio', f))]
   
   # Combine filtering and conversion
-  structured_output= {
+  structured_outputs= {
       item['sequence_no']: item 
       for item in processed_video_response 
       if item is not None
   }
+  
+  
   return {
     "status": "success",
     "scene_detection_response": scene_detection_response,
-    "structured_output": structured_output
+    "structured_output": structured_outputs
   }
+
+def final_structured_output(structured_outputs: list, input_schema: str):
+  print('structured_outputs', structured_outputs)
+  print('input_schema', input_schema)
+  join_structured_outputs = '---\n'.join(structured_outputs)
+  print(join_structured_outputs)
+  
 
 def get_mean_content_val(stats_file: str) -> float:
   content_vals = []
