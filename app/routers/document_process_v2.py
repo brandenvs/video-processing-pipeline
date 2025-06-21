@@ -15,9 +15,10 @@ import time
 import tempfile
 import logging
 from pypdf import PdfReader
+from qwen_vl_utils import process_vision_info
 
 import torch
-from routers import model_management as mm
+from app.routers import model_management as mm
 
 from app.routers.video_processing import FieldDefinition
 import functools
@@ -478,6 +479,10 @@ class Qwen2_VQA:
         ],
       },
     ]
+    system_prompts = self.processor.apply_chat_template(
+      analyze_messages, tokenize=False, add_generation_prompt=True
+    )
+    image_inputs, video_inputs = process_vision_info(analyze_messages)
     
     # Process the messages
     print("Processing document with combined prompt...")

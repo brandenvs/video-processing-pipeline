@@ -109,7 +109,7 @@ async def process_video(request_body: BaseProcessor):
   }
   print('Inference Object', infer_obj)
   process_video = functools.partial(model_manager.inference_helper, **infer_obj)
-  processed_video_response, generated_response = await loop.run_in_executor(executor, process_video)
+  processed_video_response, finalStructuredOutput = await loop.run_in_executor(executor, process_video)
   
   # Cleanup for next video ...
   [os.remove(os.path.join('segments', f)) for f in os.listdir('segments') if os.path.isfile(os.path.join('segments', f))]
@@ -125,7 +125,7 @@ async def process_video(request_body: BaseProcessor):
     "status": "success",
     "scene_detection_response": scene_detection_response,
     "structured_output": structured_outputs,
-    "final_response": generated_response
+    "finalStructuredOutput": finalStructuredOutput
   }
  
 
