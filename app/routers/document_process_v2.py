@@ -13,7 +13,7 @@ import json
 import re
 
 import torch
-from routers import model_management as mm
+from app.routers import model_management as mm
 
 from app.routers.video_processing import FieldDefinition
 import functools
