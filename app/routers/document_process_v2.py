@@ -81,9 +81,7 @@ def cleanup_executor():
 atexit.register(cleanup_executor)
 
 @router.post('/process/')
-async def process_document(request_body: BaseProcessor):
-  print(request_body)
-  
+async def process_document(request_body: BaseProcessor): 
   filename = f'/home/ubuntu/adp-video-pipeline/source_data/{uuid.uuid4()}document.pdf'
   source_path, res = urllib.request.urlretrieve(request_body.source_path, filename)
   
@@ -98,12 +96,22 @@ async def process_document(request_body: BaseProcessor):
       request_body.dpi
     )    
     processed_document_response = await loop.run_in_executor(executor, process_document)
-
+    final_schema = join_sequences(processed_document_response)
+    print('Final Schema: ', final_schema)
   return {
     "status": "success",
-    "processed_document_response": processed_document_response
+    "processed_document_response": processed_document_response,
+    "final_schema": final_schema
   }
 
+def join_sequences(sequences):
+    combined = {}
+    for seq in sequences:
+        # Remove sequence_no and merge the rest
+        seq_copy = seq.copy()
+        seq_copy.pop('sequence_no', None)
+        combined.update(seq_copy)
+    return combined
 
 class Qwen2_VQA:
   def __init__(self):
@@ -120,7 +128,6 @@ class Qwen2_VQA:
       return
 
     torch.cuda.empty_cache()
-    print('Total Garbage Collected', gc.collect())
     torch.manual_seed(46)
 
     self.model_checkpoint = os.path.join(
@@ -145,29 +152,27 @@ class Qwen2_VQA:
       )
     else:
       quantization_config = None
-
-    print(f"Loading model with dtype: {self.dtype} on device: {self.device}")
     
-    with torch.cuda.amp.autocast(enabled=self.dtype==torch.float16):
-      self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        self.model_checkpoint,
-        torch_dtype=self.dtype,
-        attn_implementation="flash_attention_2" if torch.cuda.get_device_capability()[0] >= 8 else "eager",
-        device_map=self.device,
-        quantization_config=quantization_config,
-      )
+    self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+      self.model_checkpoint,
+      torch_dtype=self.dtype,
+      attn_implementation="flash_attention_2",
+      device_map=self.device,
+      quantization_config=quantization_config,
+    )
 
     self.processor = AutoProcessor.from_pretrained(
       self.model_checkpoint,
       min_pixels = 256*28*28,
-      max_pixels = 1024*28*28,
+      max_pixels = 1280*28*28,
     )
+
+    self._model_loaded = True
     
     self.tokenizer = AutoTokenizer.from_pretrained(self.model_checkpoint)
     self._model_loaded = True
 
   def process_generated_response(self, generated_response: str, sequence_no: int):
-    print(f'GENERATED RESPONSE FOR BATCH: {sequence_no}', generated_response)
     if generated_response.startswith("```json"):
       try:
         lines = generated_response.strip().splitlines()
@@ -198,8 +203,20 @@ class Qwen2_VQA:
 
   def process_page(self, image_path: str, system_prompt: str, max_token: int, page_num: int) -> Dict[str, Any]:
     page_specific_prompt = """
-    You are an expert document analyzer. Examine this document and provide a complete structured JSON output of all information present in the document. 
-    Use the following JSON Structured Output Schema for each field: { label: string; field_type: string; description: string; required: boolean }
+    You are an expert document analyzer. 
+    Examine this document content and then contextual extract the following data using structured output:
+    - label: The field name.
+    - description: A concise description that a Video Analysis model can use to interpret the field more accurately.
+    - field type: Either 'text', 'number', or 'list'.
+    - options: A list of the options for checkboxes (can be and empty list).
+    - required: wether or not the field should be made mandatory.
+    
+    Use headings and subheadings as context but do not include them with your response.
+    
+    Use the following Structured Output Schema: 
+    { [fieldVar: string]: { label: string, field_type: string, description: string, options: [], required: boolean }
+    For example: { preventive_measures: { label: "Preventative Measures",  description: "What preventive measures can be implemented to avoid similar incidents in the future?", options: [], required: "true" }}
+    NOTE: fieldVar must match the label but should be all lowercase letters and whitespaces should be replaced with underscores - 
     """
     messages = [
       {
@@ -232,13 +249,7 @@ class Qwen2_VQA:
     )
     inputs = inputs.to(self.device)
       
-    outputs = self.model.generate(
-      **inputs,
-      max_new_tokens=max_token,
-      do_sample=False,
-      temperature=0.1,
-      repetition_penalty=1.1,
-    )
+    outputs = self.model.generate(**inputs, max_new_tokens=max_token)
     
     generated_ids_trimmed = [
       out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
@@ -247,6 +258,7 @@ class Qwen2_VQA:
     generated_response = self.tokenizer.batch_decode(generated_ids_trimmed, skip_special_tokens=True)
     
     generated_response = self.process_generated_response(generated_response[0], page_num)
+    print('generated_response', generated_response)
     return {
       **generated_response,
       "page_number": page_num
@@ -259,7 +271,6 @@ class Qwen2_VQA:
 
     try:
       if not self._model_loaded:
-        print('>>> Loading model into memory')
         self.load_model(model_id)
       
       if source_path.endswith('.pdf'):
@@ -270,7 +281,6 @@ class Qwen2_VQA:
 
       for idx, image_path in enumerate(page_paths):          
         result = self.process_page(image_path, system_prompt, max_token, idx + 1)
-        print(json.dumps(result, indent=2))
         page_results.append(result)
 
       # Clean up PDF images
@@ -282,167 +292,5 @@ class Qwen2_VQA:
     except Exception as e:
       logging.exception(f"Error processing document: {e}")
       return {"error": str(e), "processing_time_seconds": round(time.time() - start_time, 2)}
-
-  def _extract_document_text(self, file_path: str) -> str:
-    if not os.path.exists(file_path) or not file_path.lower().endswith('.pdf'):
-        return ""
-        
-    try:
-        with open(file_path, 'rb') as f:
-            pdf = PdfReader(f)
-            text = ""
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n\n"
-            return text
-    except Exception as e:
-        logging.error(f"Error extracting text from PDF: {e}")
-        return ""
-  
-  def _extract_fields_with_ai(self, document_text: str, document_type: str = "form") -> List[str]:
-    prompt = f"""
-    Analyze this {document_type} document text and identify all form field names. 
-    Return ONLY the normalized field names (snake_case) as a Python list.
-    Example: ["first_name", "last_name", "date_of_birth"]
-    
-    Document text:
-    {document_text[:4000]}
-    """
-    
-    if not self._model_loaded:
-        self.load_model("qwen/Qwen2.5-VL-3B-Instruct")
-        
-    try:
-        messages = [
-            {"role": "system", "content": "You are a document field extraction assistant. Extract form fields from documents."},
-            {"role": "user", "content": prompt}
-        ]
-        
-        inputs = self.processor.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_tensors="pt"
-        ).to(self.device)
-        
-        with torch.no_grad():
-            outputs = self.model.generate(
-                inputs,
-                max_new_tokens=500,
-                do_sample=False,
-                temperature=0.1
-            )
-        
-        response_text = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-        
-        try:
-            start_idx = response_text.find('[')
-            end_idx = response_text.rfind(']')
-            if start_idx >= 0 and end_idx > start_idx:
-                list_text = response_text[start_idx:end_idx+1]
-                fields_list = json.loads(list_text.replace("'", '"'))
-                if isinstance(fields_list, list):
-                    return fields_list
-        except:
-            pass
-        
-        return []
-        
-    except Exception as e:
-        logging.error(f"Error extracting fields with AI: {e}")
-        return []
-
-  def _extract_json_from_text(self, text: str) -> Dict:
-    try:
-        start_idx = text.find('{')
-        if start_idx == -1:
-            return {"raw_text": text}
-        
-        open_braces = 0
-        json_end = start_idx
-        
-        for i in range(start_idx, len(text)):
-            if text[i] == '{':
-                open_braces += 1
-            elif text[i] == '}':
-                open_braces -= 1
-                if open_braces == 0:
-                    json_end = i + 1
-                    break
-        
-        if open_braces != 0:
-            return {"raw_text": text}
-            
-        json_str = text[start_idx:json_end]
-        return json.loads(json_str)
-    except:
-        return {"raw_text": text}
-  
-  def _combine_page_results(self, page_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    if not page_results:
-      return {"error": "No page results to combine"}
-    
-    combined = {
-      "document_type": self._determine_document_type(page_results),
-      "pages": page_results,
-      "combined_content": {}
-    }
-    
-    first_page = page_results[0]
-    for key, value in first_page.items():
-      if key not in ["page_number", "raw_text", "processing_time_seconds"] and key not in combined:
-        combined[key] = value
-    
-    all_fields = {}
-    
-    for page in page_results:
-      page_num = page.get("page_number", 0)
-      
-      for key, value in page.items():
-        if key in ["page_number", "document_type", "raw_text", "processing_time_seconds"]:
-          continue
-          
-        if key not in all_fields:
-          all_fields[key] = {
-            "value": value,
-            "sources": [page_num]
-          }
-        else:
-          if all_fields[key]["value"] != value and value:
-            if isinstance(all_fields[key]["value"], list):
-              if value not in all_fields[key]["value"]:
-                all_fields[key]["value"].append(value)
-            else:
-              all_fields[key]["value"] = [all_fields[key]["value"], value]
-            
-          if page_num not in all_fields[key]["sources"]:
-            all_fields[key]["sources"].append(page_num)
-    
-    for key, data in all_fields.items():
-      combined["combined_content"][key] = data["value"]
-    
-    return combined
-  
-  def _determine_document_type(self, page_results: List[Dict[str, Any]]) -> str:
-    type_counts = {}
-    
-    for page in page_results:
-      doc_type = page.get("document_type", "")
-      if not doc_type and "tag" in page:
-        doc_type = page.get("tag", "")
-      
-      if doc_type:
-        type_counts[doc_type] = type_counts.get(doc_type, 0) + 1
-    
-    if type_counts:
-      most_common = max(type_counts.items(), key=lambda x: x[1])[0]
-      return most_common
-    
-    return "document"
-
-class QwenDocumentIntegrator(Qwen2_VQA):
-    pass
-
 
 model_manager = Qwen2_VQA()

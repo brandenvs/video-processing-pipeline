@@ -28,11 +28,9 @@ async def lifespan(app: FastAPI):
     if hasattr(video_processing, "executor") and video_processing.executor:
         video_processing.executor.shutdown(wait=True)
 
-    # audio processing 
     if hasattr(audio_processing, "executor") and audio_processing.executor:
         audio_processing.executor.shutdown(wait=True)
 
-    # document processing
     if hasattr(document_process_v2, "executor") and document_process_v2.executor:
         document_process_v2.executor.shutdown(wait=True)
 
@@ -46,7 +44,6 @@ app = FastAPI(
 app.include_router(video_processing.router)
 app.include_router(audio_processing.router)
 app.include_router(document_process_v2.router)
-# app.include_router(document_flow.router)
 
 app.add_middleware(
     CORSMiddleware,

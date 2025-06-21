@@ -12,7 +12,6 @@ import torch
 from pydantic import BaseModel
 import urllib
 from app.routers.document_process_v2 import (
-    QwenDocumentIntegrator, 
     BaseProcessor, 
     normalize_field_name,
     convert_to_human_readable_label
@@ -124,7 +123,7 @@ async def extract_document_fields(
     batch_size = request_body.batch_size or 3
     
     try:
-        integrator = QwenDocumentIntegrator()
+        integrator = {}
         
         system_prompt = f"""
         Analyze this {document_type} document and:
