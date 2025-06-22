@@ -18,8 +18,9 @@ from pathlib import Path
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig # type: ignore
 from qwen_vl_utils import process_vision_info
 
-from app.routers import model_management as mm
 from fastapi import APIRouter
+from app.routers import model_management as mm
+
 from typing import Any, Optional
 from pydantic import BaseModel
 
@@ -393,7 +394,6 @@ Generate the final consolidated analysis:"""
     except Exception as ex:
       print(ex)
     return generated_response
-
       
   def inference_helper(self, model_id: str, system_prompt: str, max_tokens: int, input_schema: str, segments: list, stats_scene: list):
     responses = []

@@ -5,7 +5,7 @@ from app.routers import model_management
 from app.routers import cli_args
 from app.routers import options
 
-ROUTES = {
+ROUTERS = {
     'VideoProcessing': video_processing,
     'AudioProcessing': audio_processing,
     'ModelManagement': model_management,

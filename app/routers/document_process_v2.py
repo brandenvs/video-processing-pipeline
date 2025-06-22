@@ -112,11 +112,11 @@ def join_sequences(sequences):
     combined = {}
     for seq in sequences:
         # Remove sequence_no and merge the rest
-        seq_copy = seq.copy()
-        seq_copy.pop('sequence_no', None)
-        combined.update(seq_copy)
+        # seq_copy = seq.copy()
+        # seq.pop('sequence_no', None)
+        filtered_data = {k: v for k, v in seq.items() if k not in ['sequence_no', 'page_number']}
+        combined.update(filtered_data)
     return combined
-
 
 class Qwen2_VQA:
   def __init__(self):
@@ -210,10 +210,10 @@ class Qwen2_VQA:
     page_specific_prompt = """
     You are an expert document analyzer. 
     Examine this document content and then contextual extract the following data using structured output:
-    - label: The field name.
+    - label: The extracted field name(i.e, Type of Facility)
     - description: A concise description that a Video Analysis model can use to interpret the field more accurately.
     - field type: Either 'text', 'number', or 'list'.
-    - options: A list of the options for checkboxes (can be and empty list).
+    - options: A list of the options for checkboxes(can be and empty list).
     - required: wether or not the field should be made mandatory.
     
     Use headings and subheadings as context but do not include them with your response.
@@ -221,7 +221,7 @@ class Qwen2_VQA:
     Use the following Structured Output Schema: 
     { [fieldVar: string]: { label: string, field_type: string, description: string, options: [], required: boolean }
     For example: { preventive_measures: { label: "Preventative Measures",  description: "What preventive measures can be implemented to avoid similar incidents in the future?", options: [], required: "true" }}
-    NOTE: fieldVar must match the label but should be all lowercase letters and whitespaces should be replaced with underscores - 
+    NOTE: fieldVar must match the label but should be all lowercase letters and whitespaces should be replaced with underscores(i.e, type_of_facility)
     """
     messages = [
       {
@@ -263,7 +263,6 @@ class Qwen2_VQA:
     generated_response = self.tokenizer.batch_decode(generated_ids_trimmed, skip_special_tokens=True)
     
     generated_response = self.process_generated_response(generated_response[0], page_num)
-    print('generated_response', generated_response)
     return {
       **generated_response,
       "page_number": page_num

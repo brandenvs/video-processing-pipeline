@@ -56,3 +56,7 @@ app.add_middleware(
 @app.get("/")
 async def root():
     return {"message": "Video Processing Pipeline - StadPrin"}
+
+@app.get("/health")
+async def check_health():
+    return {"message": "online"}
