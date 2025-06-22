@@ -314,48 +314,47 @@ class Qwen2_VQA:
 
   def process_final_schema(self, input_schema, responses):
     data = [item for item in responses if item is not None]
+    fields_info = {}
+    for field_name, field_def in input_schema.items():
+      fields_info[field_name] = {
+        "label": field_def['label'],
+        "value": "[Generated Value Based on the entire video analysis]",
+      }
+    input_schema = json.dumps(fields_info, indent=2)
     input_data = json.dumps(data, indent=2)
+    
     
     messages = [
       {
-          "role": "system",
-          "content": f"""You are an expert data analyst specializing in video analysis aggregation. Your task is to synthesize multiple video sequence analyses into a single, coherent final report.
+        "role": "system",
+        "content": f"""Video Analysis Synthesizer: Aggregate {len(data)} sequence analyses into unified JSON report.
 
-ANALYSIS APPROACH:
-1. Review all sequence data for patterns and consistency
-2. Resolve conflicts by prioritizing most detailed/confident observations
-3. Aggregate temporal information across sequences
-4. Generate comprehensive summary maintaining data integrity
+        SYNTHESIS RULES BY FIELD TYPE:
+        - **Checkbox fields**: Use exact option values within the given schema
+        - **Text fields**: Synthesize descriptions, max 200 chars
+        - **Boolean fields**: Binary decision based on evidence across all sequences
 
-OUTPUT REQUIREMENTS:
-- Must conform exactly to this JSON schema: {input_schema}
-- Use "Yes"/"No" for boolean fields, never "Not applicable" 
-- Consolidate contradictory evidence logically
-- Prioritize positive detections over negative ones when evidence exists
-- Include confidence indicators where multiple sequences conflict
+        AGGREGATION LOGIC:
+        1. For "Whether/Did" questions → Any positive detection = "Yes"
+        2. For "When" questions → Earliest/most specific timestamp
+        3. For "Description" fields → Combine all relevant details
+        4. For equipment/items → List all unique items observed
 
-CONFLICT RESOLUTION RULES:
-- If any sequence detects weapons/suspects/plates, mark as detected
-- Combine witness and civilian counts from all sequences
-- Use most detailed suspect descriptions available
-- Aggregate all unique license plate observations"""
+        OUTPUT FORMAT:
+        - Schema: {input_schema}
+        - Each field: {{"label": "field_name", "value": "string_under_200_chars"}}
+        - Resolve conflicts by choosing most detailed/frequent observation"""
       },
       {
-          "role": "user", 
-          "content": f"""Analyze and synthesize the following video sequence data into the final schema:
+        "role": "user",
+        "content": f"""Synthesize the following {len(data)} video sequences: {input_data}
 
-SEQUENCE DATA ({len(data)} sequences analyzed):
-{input_data}
+        Task: For each label above, determine ONE conclusive value based on ALL sequences.
+        Priority: Positive detections > Detailed descriptions > Recent observations
 
-Requirements:
-- Synthesize information across all {len(data)} video sequences
-- Resolve any conflicting observations logically
-- Generate a comprehensive final analysis
-- Return ONLY valid JSON matching the required schema
-
-Generate the final consolidated analysis:"""
+        Output only the JSON array. No explanations."""
       }
-  ]
+    ]
     system_prompts = self.processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
