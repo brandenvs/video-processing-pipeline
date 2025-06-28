@@ -110,6 +110,7 @@ async def process_document(request_body: BaseProcessor):
 
 def join_sequences(sequences):
     combined = {}
+    print(sequences)
     for seq in sequences:
         # Remove sequence_no and merge the rest
         # seq_copy = seq.copy()

@@ -45,8 +45,8 @@ class BaseProcessor(BaseModel):
 router = APIRouter()
 
 router = APIRouter(
-  prefix="/process",
-  tags=["process"],
+  prefix="/video",
+  tags=["video"],
   responses={404: {"description": "Not found"}},
 )
 
@@ -66,9 +66,12 @@ def check_memory(device=mm.get_torch_device):
 
   free_mem_gb = mm.get_free_memory(device) / (1024 * 1024 * 1024)
   print(f"GPU memory checked: {free_mem_gb:.2f}GB available.")
+  
+  gpu_summary = torch.cuda.memory_summary()
+  print(gpu_summary)
   return (free_mem_gb, total_mem)
 
-@router.post("/video/")
+@router.post("/process/")
 async def process_video(request_body: BaseProcessor):
   print('request_body: ', request_body)
   loop = asyncio.get_running_loop()
@@ -313,6 +316,7 @@ class Qwen2_VQA:
     self._model_loaded = True
 
   def process_final_schema(self, input_schema, responses):
+    print('process_final_schema')
     data = [item for item in responses if item is not None]
     fields_info = {}
     for field_name, field_def in input_schema.items():
@@ -323,50 +327,63 @@ class Qwen2_VQA:
     input_schema = json.dumps(fields_info, indent=2)
     input_data = json.dumps(data, indent=2)
     
+    # print('input_data ', input_data)
+    print('input_schema ', input_schema)
     
     messages = [
       {
-        "role": "system",
-        "content": f"""Video Analysis Synthesizer: Aggregate {len(data)} sequence analyses into unified JSON report.
+          "role": "system",
+          "content": f"""You are an expert data analyst specializing in video analysis aggregation. Your task is to synthesize multiple video sequence analyses into a single, coherent final report.
 
-        SYNTHESIS RULES BY FIELD TYPE:
-        - **Checkbox fields**: Use exact option values within the given schema
-        - **Text fields**: Synthesize descriptions, max 200 chars
-        - **Boolean fields**: Binary decision based on evidence across all sequences
+ANALYSIS APPROACH:
+1. Review all sequence data for patterns and consistency
+2. Resolve conflicts by prioritizing most detailed/confident observations
+3. Aggregate temporal information across sequences
+4. Generate comprehensive summary maintaining data integrity
 
-        AGGREGATION LOGIC:
-        1. For "Whether/Did" questions → Any positive detection = "Yes"
-        2. For "When" questions → Earliest/most specific timestamp
-        3. For "Description" fields → Combine all relevant details
-        4. For equipment/items → List all unique items observed
+OUTPUT REQUIREMENTS:
+- Must conform exactly to this JSON schema: {input_schema}
+- Use "Yes"/"No" for boolean fields, never "Not applicable" 
+- Consolidate contradictory evidence logically
+- Prioritize positive detections over negative ones when evidence exists
+- Include confidence indicators where multiple sequences conflict
 
-        OUTPUT FORMAT:
-        - Schema: {input_schema}
-        - Each field: {{"label": "field_name", "value": "string_under_200_chars"}}
-        - Resolve conflicts by choosing most detailed/frequent observation"""
+CONFLICT RESOLUTION RULES:
+- If any sequence detects weapons/suspects/plates, mark as detected
+- Combine witness and civilian counts from all sequences
+- Use most detailed suspect descriptions available
+- Aggregate all unique license plate observations"""
       },
       {
-        "role": "user",
-        "content": f"""Synthesize the following {len(data)} video sequences: {input_data}
+          "role": "user", 
+          "content": f"""Analyze and synthesize the following video sequence data into the final schema:
 
-        Task: For each label above, determine ONE conclusive value based on ALL sequences.
-        Priority: Positive detections > Detailed descriptions > Recent observations
+SEQUENCE DATA ({len(data)} sequences analyzed):
+{input_data}
 
-        Output only the JSON array. No explanations."""
+Requirements:
+- Synthesize information across all {len(data)} video sequences
+- Resolve any conflicting observations logically
+- Generate a comprehensive final analysis
+- Return ONLY valid JSON matching the required schema
+
+Generate the final consolidated analysis:"""
       }
     ]
+    print()
+    print('>>> PROCESSING FINAL SCHEMA ...')
+    torch.cuda.empty_cache()
+    gc.collect()
+    print('Cleared GPU!')
+    check_memory(self.device)
     system_prompts = self.processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    image_inputs, video_inputs = process_vision_info(messages)
-
-    check_memory(self.device)
+    
 
     print('Preparing inputs ....')
     inputs = self.processor(
       text=system_prompts,
-      videos=video_inputs,
-      images=image_inputs,
       padding=True,
       return_tensors="pt",
     )
@@ -374,7 +391,7 @@ class Qwen2_VQA:
 
     print('>>> Inference: Generation of the output')
     try:
-      outputs = self.model.generate(**inputs, max_new_tokens=2000)
+      outputs = self.model.generate(**inputs, max_new_tokens=8000)
 
       generated_ids_trimmed = [
         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
@@ -385,10 +402,10 @@ class Qwen2_VQA:
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
       )
-      print('>> PRE PROCESSED generated_response ', generated_response)
+    #   print('>> PRE PROCESSED generated_response ', generated_response)
       generated_response = self.process_generated_response(generated_response[0], 999)
-      print('>>> POST PROCESSED generated_response ', generated_response)
-      print(json.dumps(generated_response, indent=2))
+    #   print('>>> POST PROCESSED generated_response ', generated_response)
+    #   print(json.dumps(generated_response, indent=2))
 
     except Exception as ex:
       print(ex)
@@ -413,13 +430,14 @@ class Qwen2_VQA:
         
         subprocess.run([
           'ffmpeg', '-y', '-i', segment_path,
-          '-r', '5', '-c:v', 'libx264', '-crf', '23',
+          '-r', '1',
+          '-vf', 'scale=640:360',
+          '-c:v', 'libx264','-preset', 'fast', '-crf', '28',
           '-an',
           temp_path,
           '-vn', '-c:a', 'aac',
           f'audio/{segment}.aac'
-        ], capture_output=True, text=True)                
-        shutil.move(temp_path, segment_path)
+        ], capture_output=True, text=True)
 
       with open(f'segments/{stats_scene[seq]["scene"]}', 'r') as f:
         reader = csv.DictReader(f)
@@ -433,74 +451,163 @@ class Qwen2_VQA:
     generated_response = self.process_final_schema(input_schema, responses)
     return (responses, generated_response)
 
-  def inference(self, segment_path: str, system_prompt: str, max_tokens: int, input_schema: str, seq: int, batch_length: str):
-    start_time = time.time() # timer
+  def segmented_prompts(self, field_schema):      
+    outputs = {}
+    field_context = []
+    segmented_field_context = []
+    field_names_per_segment = []
+    current_segment_fields = []
+    segment_index = 0
+
+    for field_name, field_def in field_schema.items():
+        label = field_def.get('label', field_name)
+        field_type = field_def.get('type', 'text')
+        required = field_def.get('required', False)
+        description = field_def.get('description', '')
+        options = field_def.get('options', None)
+        
+        outputs[field_name] = {
+            'label': label,
+            'value': f'<analyzed {label} from video>'
+        }
+        
+        context = f"Field: {field_name}\n"
+        context += f"  - Label: {label}\n"
+        context += f"  - Type: {field_type}\n"
+        if description:
+            context += f"  - Description: {description}\n"
+        if required:
+            context += f"  - Required: Yes\n"
+        if options:
+            context += f"  - Options: {options}\n"
+        
+        field_context.append(context)
+        current_segment_fields.append(field_name) 
+        
+        if len(field_context) > 5:
+            segmented_field_context.append(field_context[:5])
+            field_context = field_context[5:]
+            segment_index += 1
+            print(f'Created segment {segment_index} with 5 fields')
+            
+            field_names_per_segment.append(current_segment_fields[:5])
+            current_segment_fields = current_segment_fields[5:]
+
+    field_schemas = []
+    if field_context:
+        segmented_field_context.append(field_context)
+        field_names_per_segment.append(current_segment_fields)
+        print(f'Final segment with {len(field_context)} fields')
+        
+    for idx, field_names in enumerate(field_names_per_segment):
+        segmented_output_field_context = {}
+        for name in field_names:            
+            segmented_output_field_context[name] = outputs[name]
+        print(f'>>> {idx} OUTPUT Segment: ', segmented_output_field_context)
     
-    fields_info = {}
-    for field_name, field_def in input_schema.items():
-      fields_info[field_name] = {
-        "label": field_def['label'],
-        "value": "[Generated Value Based on the video analysis]",
-      }
-    schema_str = json.dumps(fields_info, indent=2)
+        field_schemas.append({
+            'segmented_field_context': segmented_field_context[idx],
+            'segmented_output_field_context': segmented_output_field_context,
+        })
+    return field_schemas
+    
+    
+  def inference(self, segment_path: str, system_prompt: str, max_tokens: int, field_schema: str, seq: int, batch_length: str):
+    start_time = time.time() # timer
+    torch.cuda.empty_cache()
+    gc.collect()
+    check_memory()
+    responses = []
+    segmented_field_schemas = self.segmented_prompts(field_schema)
+    
+    for schemas in segmented_field_schemas:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                "You are an expert visual analysis system that MUST output valid JSON.\n\n"
+                "FIELD DEFINITIONS (use these to understand what to analyze):\n"
+                + "\n".join(schemas['segmented_field_context']) + "\n\n"
+                "OUTPUT FORMAT: For each field, output ONLY:\n"
+                "{\n"
+                " 'field_name': {\n"
+                "    'label': 'exact label from field definition',\n"
+                "    'value': 'your analyzed value based on the video'\n"
+                "  }\n"
+                "}\n\n"
+                "CRITICAL RULES:\n"
+                "1. Output ONLY valid JSON\n"
+                "2. Each field must have exactly 'label' and 'value' keys\n"
+                "3. Use the field descriptions to guide your analysis\n"
+                "4. The 'label' must match exactly from the field definition\n"
+                "5. The 'value' contains your analysis based on the video\n\n"
+                f"EXAMPLE OUTPUT:\n{json.dumps(schemas['segmented_output_field_context'], indent=2)}"
+                )
+            },
+            {
+                "role": "user",
+                "content": [
+                {"type": "video", "video": segment_path},
+                {
+                    "type": "text", 
+                    "text": (
+                    f"{system_prompt}\n\n"
+                    "Analyze the video and output ONLY a JSON object where each field "
+                    "has 'label' (from the field definition) and 'value' (your analysis)."
+                    )
+                }
+                ]
+            }
+        ]
 
-    messages = [
-      {
-        "role": "system",
-        "content": f"You are an expert visual analysis system. Analyze the video and generate structured output using the following JSON schema: {schema_str}",
-      },
-      {
-        "role": "user",
-        "content": [
-          {"type": "video", "video": segment_path},
-          {"type": "text", "text": system_prompt},
-        ],
-      },
-    ]
 
-    print('>>> Preparation for inference')
-    system_prompts = self.processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    image_inputs, video_inputs = process_vision_info(messages)
+        print('>>> Preparation for inference')
+        system_prompts = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        image_inputs, video_inputs = process_vision_info(messages)
 
-    check_memory(self.device)
+        check_memory(self.device)
 
-    print('Preparing inputs ....')
-    inputs = self.processor(
-      text=system_prompts,
-      videos=video_inputs,
-      images=image_inputs,
-      padding=True,
-      return_tensors="pt",
-    )
-    inputs =  inputs.to(self.device)
+        print('Preparing inputs ....')
+        inputs = self.processor(
+        text=system_prompts,
+        videos=video_inputs,
+        images=image_inputs,
+        padding=True,
+        return_tensors="pt",
+        )
+        inputs =  inputs.to(self.device)
 
-    print('>>> Inference: Generation of the output')
-    try:
-      outputs = self.model.generate(**inputs, max_new_tokens=max_tokens)
+        print('>>> Inference: Generation of the output')
+        try:
+            outputs = self.model.generate(**inputs, max_new_tokens=4096) # max token override
 
-      generated_ids_trimmed = [
-        out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
-      ]
+            generated_ids_trimmed = [
+                out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
+            ]
 
-      generated_response = self.processor.batch_decode(
-        generated_ids_trimmed,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False,
-      )
-      generated_response = self.process_generated_response(generated_response[0], seq)
+            generated_response = self.processor.batch_decode(
+                generated_ids_trimmed,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+            generated_response = self.process_generated_response(generated_response[0], seq)
 
-      finished_in = time.time() - start_time
-      print(json.dumps(generated_response, indent=2))
-      response = {
-        **generated_response,
-        "batch_length": batch_length,
-        "finished_in": round(finished_in, 3)
-      }
-      return response
-    except Exception as ex:
-      print(ex)
+            finished_in = time.time() - start_time
+            print(json.dumps(generated_response, indent=2))
+            response = {
+                **generated_response,
+                'batch_length': batch_length,
+                'finished_in': round(finished_in, 3)
+            }
+            responses.append(json.dumps(response))
+        except Exception as ex:
+            print(ex)
+        
+    returned_response = ', '.join(responses)
+    print('FINAL RESPONSE ', returned_response)
+    return returned_response
 
 
 model_manager = Qwen2_VQA()
