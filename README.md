@@ -1,4 +1,3 @@
-@Dylan, we can do this in a weekend.
 
 # ADP Video Pipeline
 
