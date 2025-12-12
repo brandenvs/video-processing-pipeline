@@ -1,30 +1,51 @@
+# ------------------------------------
+# 1. Python Environment/Build Files
+# ------------------------------------
 .venv/
-*/models/
-data/
-*db
-adp-video-pipeline/nodes/
-nodes/
-adp-video-pipeline/nodes
-*/audio/
+venv/
 __pycache__/
+*.pyc
+
+# ------------------------------------
+# 2. IDE/System Config Files
+# ------------------------------------
+.vscode/           # Visual Studio Code settings
+.env               # Local environment variables
+.random_kak_claude_did/ # Specific temporary file/folder
+
+# ------------------------------------
+# 3. Data and Output Directories
+# ------------------------------------
+# General data/storage directories
+data/
+local/
+sample_data/
+source_data/
+
+# Database files/artifacts (often stored locally)
+*db                 # Ignores files ending in 'db', like local.db or dev.sqlite.db
+
+# Output/Temporary directories
+*/models/           # Ignored inside any subdirectory
+*/audio/
 */pdf_pages/
 */input/
 */tmp/
-venv/
-data/
-local/
-.vscode/
-.random_kak_claude_did/
-check_db.py
 */uploads/
-sample_data/
-setup_database.py
-test_document.py
 */segments/
 video/
-source_data/
-source_data/*
-*/audio/
-./.ssh/
-.ssh/
-.env
+
+# ------------------------------------
+# 4. Specific Project Directories/Nodes
+# ------------------------------------
+# If 'nodes/' is consistently non-tracked code/output across the project
+nodes/
+
+# ------------------------------------
+# 5. Local Scripts (Review if needed)
+# ------------------------------------
+# NOTE: These are typically tracked in Git. Only ignore if they are temporary
+# or local-only utility copies.
+check_db.py
+setup_database.py
+test_document.py
