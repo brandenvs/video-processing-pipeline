@@ -1,7 +1,7 @@
 import psycopg2
 
 conn = psycopg2.connect(
-    dbname="stadprin",
+    dbname="host",
     user="postgres",
     host="localhost",
     password="posty",
@@ -9,20 +9,20 @@ conn = psycopg2.connect(
 cursor = conn.cursor()
 
 # Check if database exists
-cursor.execute("SELECT 1 FROM pg_database WHERE datname='stadprin'")
+cursor.execute("SELECT 1 FROM pg_database WHERE datname='host'")
 exists = cursor.fetchone()
 
 if not exists:
-    cursor.execute("CREATE DATABASE stadprin")
-    print("Created stadprin")
+    cursor.execute("CREATE DATABASE host")
+    print("Created host")
 else:
-    print("stadprin already exists")
+    print("host already exists")
 
 cursor.close()
 conn.close()
 
 conn = psycopg2.connect(
-    dbname="stadprin",
+    dbname="host",
     user="postgres",
     host="localhost",
     password="posty",

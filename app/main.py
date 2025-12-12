@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ADP Video Pipeline API",
-    description="API for processing video and audio for StadPrin",
+    description="API for processing video and audio for host",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -55,4 +55,4 @@ app.add_middleware(
 )
 @app.get("/")
 async def root():
-    return {"message": "Video Processing Pipeline - StadPrin"}
+    return {"message": "Video Processing Pipeline - host"}

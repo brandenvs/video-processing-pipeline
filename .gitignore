@@ -5,7 +5,7 @@ data/
 adp-video-pipeline/nodes/
 nodes/
 adp-video-pipeline/nodes
-
+audio/
 __pycache__/
 venv/
 data/
@@ -20,3 +20,4 @@ video/
 source_data/
 audio/
 
+.env
