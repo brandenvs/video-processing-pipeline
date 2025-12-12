@@ -1,11 +1,24 @@
+import os
 import psycopg2
 
+# Load DB credentials from environment to avoid committing secrets in source.
+DB_NAME = os.getenv("POSTGRES_DB", "host")
+DB_USER = os.getenv("POSTGRES_USER", "postgres")
+DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
+DB_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+
+if not DB_PASSWORD:
+    raise RuntimeError(
+        "Environment variable POSTGRES_PASSWORD not set. Create a .env from .env.example or export POSTGRES_PASSWORD."
+    )
+
 conn = psycopg2.connect(
-    dbname="host",
-    user="postgres",
-    host="localhost",
-    password="posty",
+    dbname=DB_NAME,
+    user=DB_USER,
+    host=DB_HOST,
+    password=DB_PASSWORD,
 )
+
 cursor = conn.cursor()
 
 # Check if database exists
@@ -22,10 +35,10 @@ cursor.close()
 conn.close()
 
 conn = psycopg2.connect(
-    dbname="host",
-    user="postgres",
-    host="localhost",
-    password="posty",
+    dbname=DB_NAME,
+    user=DB_USER,
+    host=DB_HOST,
+    password=DB_PASSWORD,
 )
 
 cursor = conn.cursor()

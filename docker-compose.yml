@@ -3,7 +3,7 @@ services:
   db:
     image: timescale/timescaledb-ha:pg17
     environment:
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
@@ -12,8 +12,8 @@ services:
   vectorizer-worker:
     image: timescale/pgai-vectorizer-worker:latest
     environment:
-      PGAI_VECTORIZER_WORKER_DB_URL: postgres://postgres:postgres@db:5432/postgres
-      OLLAMA_HOST: http://ollama:11434
+      PGAI_VECTORIZER_WORKER_DB_URL: ${PGAI_VECTORIZER_WORKER_DB_URL}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
     command: [ "--poll-interval", "5s", "--log-level", "DEBUG" ]
   ollama:
     image: ollama/ollama
