@@ -1,83 +1,132 @@
-
 # ADP Video Pipeline
 
-## Overview
+**ADP Video Pipeline** is a comprehensive, AI-powered media processing framework designed to extract structured intelligence from unstructured data. By leveraging state-of-the-art multimodal AI models, the system ingests video, audio, and documents to identify objects, analyze sentiment, transcribe speech, and parse complex forms.
 
-ADP Video Pipeline is a comprehensive AI-powered media processing framework designed for StadPrin. The system processes and analyzes multiple media types including video, audio, and documents using state-of-the-art AI models to extract structured information.
+## 🚀 Key Features
 
-## Core Components
+### 🎥 Video Intelligence
 
-### Video Pipeline
-- Processes video content using Qwen2.5-VL-3B-Instruct model
-- Implements intelligent scene detection to split videos into meaningful segments
-- Analyzes content frame-by-frame to identify objects, people, activities, and sentiment
-- Outputs structured JSON data for each video segment
-- Database integration for storing and retrieving analysis results
+Powered by **Qwen2.5-VL-3B-Instruct**.
 
-### Audio Pipeline
-- Leverages Qwen2-Audio-7B-Instruct for audio processing
-- Transcribes speech with high accuracy
-- Identifies different speakers and their emotions
-- Detects background noises and audio events
-- Processes audio from standalone files or extracted from video
+  * **Scene Detection:** Intelligently splits videos into meaningful semantic segments.
+  * **Frame Analysis:** Identifies objects, people, and activities frame-by-frame.
+  * **Sentiment Analysis:** Detects emotional tone within visual context.
+  * **Structured Output:** Exports analysis as queryable JSON data.
 
-### Document Pipeline
-- Uses Qwen3-1.7B-GGUF for document processing
-- Extracts structured information from PDF documents
-- Converts PDFs to images for AI processing
-- Parses forms, reports, and technical documents
-- Maps extracted fields to structured database schemas
+### 🎙️ Audio Intelligence
 
-## Technical Stack
-- **Backend**: FastAPI
-- **AI Models**: Qwen series (vision, audio, language)
-- **Database**: Firebase and Firestore
-- **Processing**: CUDA-enabled for GPU acceleration
-- **Deployment**: Docker containerization
-- **Server-side**: adp-functions
+Powered by **Qwen2-Audio-7B-Instruct**.
 
-## Setup Instructions
+  * **High-Fidelity Transcription:** Converts speech to text with high accuracy.
+  * **Speaker Diarization:** Distinguishes between different speakers.
+  * **Emotion & Event Detection:** Identifies speaker emotions and background audio events.
+  * **Flexible Input:** Processes standalone audio files or tracks extracted from video.
 
-1. Clone the repository
-2. Install requirements:
-   ```
-   pip install -r requirements.txt
-   pip install -r additional_requirements.txt
-   ```
-3. Configure Firebase:
-   ```
-   Set up your Firebase credentials and Firestore collections
-   ```
-4. Start the server:
-   ```
-   uvicorn app.main:app --reload
-   ```
-5. Or use Docker:
-   ```
-   docker-compose up -d
-   ```
+### 📄 Document Intelligence
 
-## API Endpoints
+Powered by **Qwen3-1.7B-GGUF**.
 
-- `/video/process/` - Process video content
-- `/audio/process/` - Process audio content  
-- `/document/process/` - Process document content
+  * **PDF Processing:** Converts and analyzes PDF documents as images.
+  * **Form Parsing:** Extracts fields from reports, forms, and technical documents.
+  * **Schema Mapping:** Automatically maps extracted data to structured database schemas.
 
-## Development Roadmap
+-----
 
-- [x] Integrate document processing pipeline
-- [x] Database integration for document processing
-- [x] Convert JSON fields into queries
-- [x] Integrate video processing pipeline
-- [x] Database integration for video processing
-- [ ] Complete audio to text pipeline integration
-- [ ] Build vectorizers for efficient retrieval
-- [ ] Implement RAG (Retrieval-Augmented Generation) with Firestore
-- [ ] Build frontend dashboard
-- [ ] Create customer upload portal
+## 🛠️ Technical Stack
 
-## Requirements
+  * **Framework:** FastAPI
+  * **AI Models:** Qwen Series (Vision, Audio, Language)
+  * **Database:** Firebase & Firestore
+  * **Infrastructure:** Docker & `adp-functions`
+  * **Acceleration:** CUDA-enabled for GPU processing
 
-See `requirements.txt` and `requirements_server.txt` for detailed dependencies.
+-----
 
+## ⚙️ Installation
 
+### Prerequisites
+
+  * Python 3.8+
+  * NVIDIA GPU with CUDA support (recommended for model inference)
+  * Firebase Project Credentials
+
+### Local Setup
+
+1.  **Clone the repository**
+
+    ```bash
+    git clone https://github.com/yourusername/adp-video-pipeline.git
+    cd adp-video-pipeline
+    ```
+
+2.  **Install Dependencies**
+    It is recommended to use a virtual environment.
+
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+    pip install -r requirements.txt
+    pip install -r additional_requirements.txt
+    ```
+
+3.  **Configuration**
+    Create a `.env` file or configure your environment variables with your Firebase credentials. Ensure your Firestore collections are initialized.
+
+-----
+
+## 🏃 Usage
+
+### Running Locally
+
+Start the FastAPI server using Uvicorn:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+The API will be available at `http://localhost:8000`.
+
+### Running with Docker
+
+Deploy the entire stack using Docker Compose:
+
+```bash
+docker-compose up -d
+```
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+| :--- | :--- | :--- |
+| `/video/process/` | POST | Upload and process video content for scene and object detection. |
+| `/audio/process/` | POST | Upload and transcribe audio files with emotion detection. |
+| `/document/process/` | POST | Upload PDF documents for extraction and schema mapping. |
+
+-----
+
+## 🗺️ Roadmap
+
+  - [x] **Document Pipeline:** Integration of Qwen3 for PDF parsing.
+  - [x] **Video Pipeline:** Integration of Qwen2.5-VL for scene analysis.
+  - [x] **Database Integration:** Full Firestore support for Video and Document results.
+  - [x] **Query Engine:** Conversion of JSON fields into queryable formats.
+  - [ ] **Audio Pipeline:** Complete "Audio to Text" integration.
+  - [ ] **Vector Search:** Build vectorizers for semantic retrieval.
+  - [ ] **RAG Implementation:** Retrieval-Augmented Generation with Firestore.
+
+-----
+
+## 🤝 Contributing
+
+Contributions are welcome\!
+
+1.  Fork the project
+2.  Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3.  Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4.  Push to the branch (`git push origin feature/AmazingFeature`)
+5.  Open a Pull Request
+
+## 📄 License
+
+Distributed under the MIT License. See `LICENSE` for more information.
